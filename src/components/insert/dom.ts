@@ -67,14 +67,31 @@ export function pasteHtml(target: HTMLElement, html: string): boolean {
   return true;
 }
 
-/** 제목 등 단일 텍스트 필드 입력. contenteditable/input 양쪽 대응. */
-export function setText(target: HTMLElement, text: string): void {
-  target.click();
-  target.focus();
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-    target.value = text;
-  } else {
-    target.textContent = text;
+/**
+ * 제목 입력 — 스파이크 실측(2026-06-04): SmartEditor 제목은 contenteditable 밖 컴포넌트.
+ * 제목 span 클릭 시 SE 가 제목을 활성화하고 focus 를 중첩 iframe body(contenteditable)로 옮긴다.
+ * 그 body 에 paste(text/plain) 하면 SE 가 활성 컴포넌트(제목)에 반영한다.
+ * (textContent/execCommand 직접 조작은 SE 모델을 깨뜨려 작게 들어가고 지워지지 않음.)
+ */
+export async function insertTitle(titleEl: HTMLElement, text: string): Promise<boolean> {
+  const doc = titleEl.ownerDocument;
+  const span = (titleEl.querySelector<HTMLElement>('span.__se-node')) ?? titleEl;
+  for (const t of ['mousedown', 'mouseup', 'click'] as const) {
+    span.dispatchEvent(
+      new MouseEvent(t, { bubbles: true, cancelable: true, view: doc.defaultView ?? undefined }),
+    );
   }
-  target.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(150); // SE 가 중첩 iframe 으로 focus 옮길 시간
+
+  let target: HTMLElement = span;
+  const active = doc.activeElement;
+  if (active instanceof HTMLIFrameElement && active.contentDocument?.body) {
+    target = active.contentDocument.body;
+  }
+  target.focus();
+  const dt = new DataTransfer();
+  dt.setData('text/plain', text);
+  return target.dispatchEvent(
+    new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+  );
 }

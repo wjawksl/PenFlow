@@ -7,7 +7,7 @@ export default defineConfig({
     alias: { '@': resolve('src') },
   },
   test: {
-    environment: 'node',
+    environment: 'jsdom', // turndown(HTML→MD)이 DOM 필요
     include: ['tests/**/*.test.ts'],
   },
 });

@@ -4,6 +4,7 @@ import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { assemblePrompt } from '@/lib/prompt';
+import { markdownToHtml } from '@/components/validator/convert';
 import { ok, err, type Result } from '@/types/common';
 import type { Credential, PayloadOptions, Prompt, Topic } from '@/types/models';
 import { stripWrappers } from './postprocess';
@@ -44,34 +45,13 @@ export async function generateBody(params: GenerateParams): Promise<Result<strin
   }
 
   progress('generate', '본문 생성 완료', { percent: 30 });
-  return ok(markdownLiteToHtml(body));
+  // M3 WP1: marked 정식 변환(표·리스트·볼드 포함). 마커는 protect/restore 로 보존.
+  return ok(markdownToHtml(body));
 }
 
 const H2_RE = /^\s*##\s+.+$/gm;
 function countH2(md: string): number {
   return (md.match(H2_RE) ?? []).length;
-}
-
-/** M1 경량 변환: ## → h2, 빈 줄 구분 문단 → p. 정식 변환(turndown/marked)은 ⑩(M3). */
-export function markdownLiteToHtml(md: string): string {
-  const blocks = md.split(/\n{2,}/);
-  return blocks
-    .map((b) => {
-      const line = b.trim();
-      if (!line) return '';
-      const h2 = line.match(/^##\s+(.+)$/);
-      if (h2) return `<h2>${escapeHtml(h2[1]!.trim())}</h2>`;
-      return `<p>${escapeHtml(line).replace(/\n/g, '<br>')}</p>`;
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 /** 본문에서 제목 추출(07 §7): 첫 H2 텍스트. 없으면 주제 키워드. */

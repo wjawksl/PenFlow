@@ -7,7 +7,7 @@ import { progress } from '@/lib/logger';
 import { EDITOR_DEFAULTS, SEL } from '@/lib/selectors';
 import { ok, err, type Result } from '@/types/common';
 import type { InsertTask, Payload, FormatPrefs } from '@/types/models';
-import { pasteHtml, resolveEl, setText, sleep, waitForEl } from './dom';
+import { insertTitle, pasteHtml, resolveEl, sleep, waitForEl } from './dom';
 
 const P = EDITOR_DEFAULTS;
 
@@ -51,24 +51,21 @@ export async function runInsert(
   // 2) 초기 팝업 정리 — R-4.2, TC-INS-03.
   resolveEl(SEL.initialPopupClose)?.click();
 
-  // 3) 본문 포커스 확보(재시도) — R-4.2, TC-INS-07.
   const body = resolveEl(SEL.bodyArea);
   if (!body) {
     return fail(ERR.EDITOR_NOT_FOUND, '본문 영역을 찾지 못했어요.', '본문 탐색');
   }
+
+  // 3) 본문 포커스 확보(재시도) — R-4.2, TC-INS-07.
   const focused = await ensureFocus(body);
   if (!focused) {
     return fail(ERR.EDITOR_NO_FOCUS, '본문 영역을 한 번 클릭해 주세요.', '포커스 확보');
   }
 
-  // 4) 제목 입력 — 07 §7, TC-INS-05.
-  progress('insert', '제목 입력 중…', { percent: 55 });
-  const titleEl = resolveEl(SEL.titleField);
-  if (titleEl) setText(titleEl, extractTitle(payload.contentHtml, titleFallback));
-
-  // 5) 본문 삽입 — InsertQueue 가 있으면 작업 순서대로(R-3.3), 없으면 단일 HTML(M1 호환).
+  // 4) 본문 삽입 — InsertQueue 가 있으면 작업 순서대로(R-3.3), 없으면 단일 HTML(M1 호환).
   //    스파이크 실측: 표(.se-table)·링크(.se-link) 모두 HTML paste 로 변환됨 → 작업별 HTML paste.
-  progress('insert', '본문 삽입 중…', { percent: 70 });
+  //    제목보다 먼저 한다: 제목 클릭이 활성 컴포넌트를 제목으로 바꿔, 이후 본문 paste 가 제목칸에 들어가기 때문.
+  progress('insert', '본문 삽입 중…', { percent: 65 });
   const queue = payload.insertQueue?.length
     ? payload.insertQueue
     : [{ type: 'text' as const, content: payload.contentHtml }];
@@ -85,10 +82,16 @@ export async function runInsert(
     await sleep(jitter()); // 작업 간 대기(R-4.3) — 에디터 처리 속도 맞춤
   }
 
-  // 6) 서식 일괄 적용(best-effort) — 12.2-5, TC-INS-04. 정교한 툴바 조작은 후속.
+  // 5) 서식 일괄 적용(best-effort) — 12.2-5, TC-INS-04. 정교한 툴바 조작은 후속.
   applyFormat(body, format);
 
-  progress('insert', '삽입 완료', { percent: 85 });
+  // 6) 제목 입력 — 맨 마지막. 07 §7, TC-INS-05. 스파이크: 제목 클릭→중첩 iframe body paste.
+  //    (제목 클릭이 focus 를 가져가므로 본문 삽입 완료 후 처리해 충돌 방지.)
+  progress('insert', '제목 입력 중…', { percent: 88 });
+  const titleEl = resolveEl(SEL.titleField);
+  if (titleEl) await insertTitle(titleEl, extractTitle(payload.contentHtml, titleFallback));
+
+  progress('insert', '삽입 완료', { percent: 92 });
   return ok(undefined);
 }
 
