@@ -49,6 +49,7 @@ async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: str
     topic: req.topic,
     prompt: req.prompt,
     reference: req.reference,
+    options: req.options, // 부가요소 마커 지시(M2)
     adapter: geminiTextAdapter,
     credential,
     model: settings.aiModel,

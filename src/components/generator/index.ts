@@ -5,13 +5,14 @@ import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { assemblePrompt } from '@/lib/prompt';
 import { ok, err, type Result } from '@/types/common';
-import type { Credential, Prompt, Topic } from '@/types/models';
+import type { Credential, PayloadOptions, Prompt, Topic } from '@/types/models';
 import { stripWrappers } from './postprocess';
 
 export interface GenerateParams {
   topic: Topic;
   prompt: Prompt;
   reference?: string;
+  options?: PayloadOptions; // 켜진 부가요소 마커를 프롬프트에 지시(M2)
   adapter: AITextAdapter;
   credential: Credential;
   model: string;
@@ -19,10 +20,10 @@ export interface GenerateParams {
 
 /** 생성 결과: 소제목(H2) 포함 본문 HTML. M1 마커 검사 = 소제목 1개 이상(구조 검사, 06 §5). */
 export async function generateBody(params: GenerateParams): Promise<Result<string>> {
-  const { topic, prompt, reference, adapter, credential, model } = params;
+  const { topic, prompt, reference, options, adapter, credential, model } = params;
 
   progress('generate', 'AI 본문 생성 중…', { percent: 10 });
-  const assembled = assemblePrompt(topic, prompt, reference);
+  const assembled = assemblePrompt(topic, prompt, reference, options);
   const res = await adapter.generate({ prompt: assembled, model, credential });
   if (!res.ok) {
     progress('generate', res.error.message, { level: 'error' });

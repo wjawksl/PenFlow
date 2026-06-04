@@ -11,6 +11,30 @@ import { pasteHtml, resolveEl, setText, sleep, waitForEl } from './dom';
 
 const P = EDITOR_DEFAULTS;
 
+// InsertTask → 삽입할 HTML 조각. 스파이크 실측: 표·링크 모두 HTML paste 로 SE 컴포넌트화됨.
+function taskToHtml(task: InsertTask): string {
+  switch (task.type) {
+    case 'text':
+    case 'productTable': // 합성기가 html table 을 content 로 전달
+    case 'backlink':
+    case 'ctaButton':
+      return String(task.content ?? '');
+    case 'adNotice':
+      return `<p>${String(task.content ?? '')}</p>`;
+    case 'shoppingLink': {
+      const url = task.link ?? String(task.content ?? '');
+      return url ? `<a href="${url}">${url}</a>` : '';
+    }
+    case 'image': // 비주얼 ⑨ — M3
+      return '';
+    default:
+      return '';
+  }
+}
+
+const jitter = (): number =>
+  P.jobDelayMin + Math.floor(Math.random() * (P.jobDelayMax - P.jobDelayMin));
+
 export async function runInsert(
   payload: Payload,
   format: FormatPrefs,
@@ -85,30 +109,6 @@ function applyFormat(body: HTMLElement, format: FormatPrefs): void {
   if (format.fontFamily) body.style.fontFamily = format.fontFamily;
   if (format.fontSize) body.style.fontSize = format.fontSize;
 }
-
-// InsertTask → 삽입할 HTML 조각. 스파이크 실측: 표·링크 모두 HTML paste 로 SE 컴포넌트화됨.
-function taskToHtml(task: InsertTask): string {
-  switch (task.type) {
-    case 'text':
-    case 'productTable': // 합성기가 html table 을 content 로 전달
-    case 'backlink':
-    case 'ctaButton':
-      return String(task.content ?? '');
-    case 'adNotice':
-      return `<p>${String(task.content ?? '')}</p>`;
-    case 'shoppingLink': {
-      const url = task.link ?? String(task.content ?? '');
-      return url ? `<a href="${url}">${url}</a>` : '';
-    }
-    case 'image': // 비주얼 ⑨ — M3
-      return '';
-    default:
-      return '';
-  }
-}
-
-const jitter = (): number =>
-  P.jobDelayMin + Math.floor(Math.random() * (P.jobDelayMax - P.jobDelayMin));
 
 function fail(code: string, message: string, step: string): Result<void> {
   progress('insert', message, { level: 'error' });

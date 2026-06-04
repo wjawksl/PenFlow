@@ -1,16 +1,51 @@
 // Side Panel 메인 UI — 09 S0. M1: 단일 플로우(주제→생성→삽입→임시저장).
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { strip } from '@/lib/markers';
 import type { GenerateReq } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
+import type { PayloadOptions } from '@/types/models';
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
+
+// 부가요소(④) 입력 상태 — 09 S3. 켜진 항목만 마커 emit + 합성.
+interface Extras {
+  adOn: boolean;
+  adText: string;
+  shopOn: boolean;
+  shopUrl: string;
+  ctaOn: boolean;
+  ctaText: string;
+  backOn: boolean;
+  backUrl: string;
+  sourceOn: boolean;
+}
+const EXTRAS_INIT: Extras = {
+  adOn: false,
+  adText: '이 글은 협찬을 받아 작성되었습니다.',
+  shopOn: false,
+  shopUrl: '',
+  ctaOn: false,
+  ctaText: '자세히 보기',
+  backOn: false,
+  backUrl: '',
+  sourceOn: false,
+};
+
+function buildOptions(e: Extras): PayloadOptions {
+  const o: PayloadOptions = { includeSourceLink: e.sourceOn };
+  if (e.adOn && e.adText.trim()) o.adNotice = { text: e.adText.trim(), position: 'top' };
+  if (e.shopOn && e.shopUrl.trim()) o.shoppingLink = { url: e.shopUrl.trim(), positions: [] };
+  if (e.ctaOn && e.ctaText.trim()) o.ctaButton = `<a href="#">${e.ctaText.trim()}</a>`;
+  if (e.backOn && e.backUrl.trim()) o.backlinkBlock = `<a href="${e.backUrl.trim()}">${e.backUrl.trim()}</a>`;
+  return o;
+}
 
 export function App() {
   const [keyword, setKeyword] = useState('');
   const [promptBody, setPromptBody] = useState(DEFAULT_PROMPT.body);
+  const [extras, setExtras] = useState<Extras>(EXTRAS_INIT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
   const [preview, setPreview] = useState('');
@@ -38,7 +73,7 @@ export function App() {
       topic: { id: crypto.randomUUID(), keyword },
       prompt: { name: DEFAULT_PROMPT.name, body: promptBody },
       method: 'direct',
-      options: { includeSourceLink: false },
+      options: buildOptions(extras),
     };
     const res = await sendCmd<GenerateReq, { payloadId: string }>('generate.run', req);
     if (!res.ok) {
@@ -100,6 +135,72 @@ export function App() {
           />
         </div>
 
+        {/* 부가요소 (선택) — 09 S3. 켜진 항목만 마커 emit + 합성 */}
+        <fieldset className="space-y-2 rounded border p-3">
+          <legend className="px-1 text-xs text-gray-500">부가요소 (선택)</legend>
+
+          <ExtraRow
+            label="광고/협찬 문구 (정책)"
+            on={extras.adOn}
+            onToggle={(v) => setExtras((s) => ({ ...s, adOn: v }))}
+          >
+            <input
+              className="w-full rounded border px-2 py-1 text-xs"
+              value={extras.adText}
+              onChange={(e) => setExtras((s) => ({ ...s, adText: e.target.value }))}
+              placeholder="협찬 표기 문구"
+            />
+          </ExtraRow>
+
+          <ExtraRow
+            label="쇼핑/제휴 링크"
+            on={extras.shopOn}
+            onToggle={(v) => setExtras((s) => ({ ...s, shopOn: v }))}
+          >
+            <input
+              className="w-full rounded border px-2 py-1 text-xs"
+              value={extras.shopUrl}
+              onChange={(e) => setExtras((s) => ({ ...s, shopUrl: e.target.value }))}
+              placeholder="https://링크"
+            />
+          </ExtraRow>
+
+          <ExtraRow
+            label="CTA 버튼"
+            on={extras.ctaOn}
+            onToggle={(v) => setExtras((s) => ({ ...s, ctaOn: v }))}
+          >
+            <input
+              className="w-full rounded border px-2 py-1 text-xs"
+              value={extras.ctaText}
+              onChange={(e) => setExtras((s) => ({ ...s, ctaText: e.target.value }))}
+              placeholder="버튼 문구"
+            />
+          </ExtraRow>
+
+          <ExtraRow
+            label="백링크"
+            on={extras.backOn}
+            onToggle={(v) => setExtras((s) => ({ ...s, backOn: v }))}
+          >
+            <input
+              className="w-full rounded border px-2 py-1 text-xs"
+              value={extras.backUrl}
+              onChange={(e) => setExtras((s) => ({ ...s, backUrl: e.target.value }))}
+              placeholder="https://백링크"
+            />
+          </ExtraRow>
+
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={extras.sourceOn}
+              onChange={(e) => setExtras((s) => ({ ...s, sourceOn: e.target.checked }))}
+            />
+            출처 링크 포함
+          </label>
+        </fieldset>
+
         <button
           className="w-full rounded bg-gray-900 py-2 text-white disabled:opacity-50"
           onClick={onGenerate}
@@ -136,6 +237,24 @@ export function App() {
           {phase === 'done' ? '✅ 임시저장 완료' : progress || '대기 중'}
         </span>
       </footer>
+    </div>
+  );
+}
+
+// 부가요소 한 줄: 체크박스 + 켜졌을 때만 입력칸 노출.
+function ExtraRow(props: {
+  label: string;
+  on: boolean;
+  onToggle: (v: boolean) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center gap-2 text-xs">
+        <input type="checkbox" checked={props.on} onChange={(e) => props.onToggle(e.target.checked)} />
+        {props.label}
+      </label>
+      {props.on && props.children}
     </div>
   );
 }
