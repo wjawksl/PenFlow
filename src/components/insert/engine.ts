@@ -6,7 +6,7 @@ import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { EDITOR_DEFAULTS, SEL } from '@/lib/selectors';
 import { ok, err, type Result } from '@/types/common';
-import type { Payload, FormatPrefs } from '@/types/models';
+import type { InsertTask, Payload, FormatPrefs } from '@/types/models';
 import { pasteHtml, resolveEl, setText, sleep, waitForEl } from './dom';
 
 const P = EDITOR_DEFAULTS;
@@ -42,15 +42,24 @@ export async function runInsert(
   const titleEl = resolveEl(SEL.titleField);
   if (titleEl) setText(titleEl, extractTitle(payload.contentHtml, titleFallback));
 
-  // 5) 본문 삽입(M1: 단일 HTML 블록) — R-3.3, TC-INS-01/10.
+  // 5) 본문 삽입 — InsertQueue 가 있으면 작업 순서대로(R-3.3), 없으면 단일 HTML(M1 호환).
+  //    스파이크 실측: 표(.se-table)·링크(.se-link) 모두 HTML paste 로 변환됨 → 작업별 HTML paste.
   progress('insert', '본문 삽입 중…', { percent: 70 });
-  try {
-    body.focus();
-    pasteHtml(body, payload.contentHtml);
-  } catch (e) {
-    return fail(ERR.INSERT_FAILED, `본문 삽입 실패: ${String(e)}`, '본문 삽입');
+  const queue = payload.insertQueue?.length
+    ? payload.insertQueue
+    : [{ type: 'text' as const, content: payload.contentHtml }];
+  for (let i = 0; i < queue.length; i++) {
+    const task = queue[i]!;
+    const html = taskToHtml(task);
+    if (!html) continue; // 이미지 등 M2 미지원 작업은 스킵
+    try {
+      body.focus();
+      pasteHtml(body, html);
+    } catch (e) {
+      return fail(ERR.INSERT_FAILED, `삽입 실패(${task.type}): ${String(e)}`, `삽입:${task.type}`);
+    }
+    await sleep(jitter()); // 작업 간 대기(R-4.3) — 에디터 처리 속도 맞춤
   }
-  await sleep(jitter());
 
   // 6) 서식 일괄 적용(best-effort) — 12.2-5, TC-INS-04. 정교한 툴바 조작은 후속.
   applyFormat(body, format);
@@ -75,6 +84,27 @@ function applyFormat(body: HTMLElement, format: FormatPrefs): void {
   if (format.lineHeight) body.style.lineHeight = format.lineHeight;
   if (format.fontFamily) body.style.fontFamily = format.fontFamily;
   if (format.fontSize) body.style.fontSize = format.fontSize;
+}
+
+// InsertTask → 삽입할 HTML 조각. 스파이크 실측: 표·링크 모두 HTML paste 로 SE 컴포넌트화됨.
+function taskToHtml(task: InsertTask): string {
+  switch (task.type) {
+    case 'text':
+    case 'productTable': // 합성기가 html table 을 content 로 전달
+    case 'backlink':
+    case 'ctaButton':
+      return String(task.content ?? '');
+    case 'adNotice':
+      return `<p>${String(task.content ?? '')}</p>`;
+    case 'shoppingLink': {
+      const url = task.link ?? String(task.content ?? '');
+      return url ? `<a href="${url}">${url}</a>` : '';
+    }
+    case 'image': // 비주얼 ⑨ — M3
+      return '';
+    default:
+      return '';
+  }
 }
 
 const jitter = (): number =>

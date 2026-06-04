@@ -1,5 +1,6 @@
 // Background (Service Worker) — 두뇌·라우터 — 05 §2. M1: ③ 생성 + ⑤ 저장 + ⑥⑦ 라우팅.
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
+import { compose } from '@/components/composer';
 import { generateBody } from '@/components/generator';
 import { buildPayload, savePayload } from '@/components/payload';
 import { getActiveCredential, loadSettings } from '@/components/settings';
@@ -54,8 +55,15 @@ async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: str
   });
   if (!res.ok) return res;
 
+  // ④ 부가요소 합성: 본문 마커 → 순서 보장 InsertQueue. 정합성 위반(광고 누락 등) 시 차단(R-3.4).
+  const composed = compose(res.value, req.options);
+  if (!composed.ok) {
+    progress('compose', composed.error.message, { level: 'error' });
+    return composed;
+  }
+
   const id = crypto.randomUUID();
-  const payload = buildPayload(id, res.value, 'TEMP_SAVE'); // M1 기본 임시저장(R-5.1)
+  const payload = buildPayload(id, res.value, 'TEMP_SAVE', req.options, composed.value); // 기본 임시저장(R-5.1)
   await savePayload(payload);
   return { ok: true, value: { payloadId: id } };
 }

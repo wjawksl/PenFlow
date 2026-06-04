@@ -82,6 +82,7 @@ export interface Payload {
   id: string; // insert.start는 이 id만 전달(05 §5)
   contentHtml: string; // 마커 포함, 검증·편집 반영본
   visuals: Visual[]; // 마커와 순서·개수 일치(16장 계약2)
+  insertQueue?: InsertQueue; // ④ 합성 결과(M2). 없으면 ⑥은 contentHtml 직접 삽입(M1 호환)
   options: PayloadOptions;
   publishOption: PublishOption;
 }
