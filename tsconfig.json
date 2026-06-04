@@ -1,0 +1,9 @@
+{
+  // WXT 가 .wxt/tsconfig.json 을 생성한다(srcDir='src' 이므로 @ → src 자동 매핑).
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true
+  }
+}

@@ -1,0 +1,86 @@
+// ⑥ 삽입 엔진 (M1) — WP4. 편집기 준비→팝업정리→포커스→제목·본문 삽입→서식→완료.
+// M1 큐는 텍스트/HTML 단일 블록(이미지·표·링크 제외). 07 §2 Happy Path 축약.
+// 스파이크 실측: 본문은 iframe[name=mainFrame] 안 → dom.ts 가 editor 문서를 자동 타깃.
+import { extractTitle } from '@/components/generator';
+import { appError, ERR } from '@/lib/errors';
+import { progress } from '@/lib/logger';
+import { EDITOR_DEFAULTS, SEL } from '@/lib/selectors';
+import { ok, err, type Result } from '@/types/common';
+import type { Payload, FormatPrefs } from '@/types/models';
+import { pasteHtml, resolveEl, setText, sleep, waitForEl } from './dom';
+
+const P = EDITOR_DEFAULTS;
+
+export async function runInsert(
+  payload: Payload,
+  format: FormatPrefs,
+  titleFallback: string,
+): Promise<Result<void>> {
+  // all_frames 주입으로 이 코드는 본문이 있는 editor iframe 안에서 실행된다 → own document.
+  // 1) 편집기 준비 감지 (폴링+타임아웃) — R-4.1, TC-INS-02/06.
+  progress('insert', '편집기 준비 대기 중…', { percent: 40 });
+  const editor = await waitForEl(SEL.editorReady, P.editorReadyTimeout, P.editorReadyPollInterval);
+  if (!editor) {
+    return fail(ERR.EDITOR_NOT_FOUND, '편집기를 찾지 못했어요. 글쓰기 팝업을 열어 주세요.', '편집기 준비');
+  }
+
+  // 2) 초기 팝업 정리 — R-4.2, TC-INS-03.
+  resolveEl(SEL.initialPopupClose)?.click();
+
+  // 3) 본문 포커스 확보(재시도) — R-4.2, TC-INS-07.
+  const body = resolveEl(SEL.bodyArea);
+  if (!body) {
+    return fail(ERR.EDITOR_NOT_FOUND, '본문 영역을 찾지 못했어요.', '본문 탐색');
+  }
+  const focused = await ensureFocus(body);
+  if (!focused) {
+    return fail(ERR.EDITOR_NO_FOCUS, '본문 영역을 한 번 클릭해 주세요.', '포커스 확보');
+  }
+
+  // 4) 제목 입력 — 07 §7, TC-INS-05.
+  progress('insert', '제목 입력 중…', { percent: 55 });
+  const titleEl = resolveEl(SEL.titleField);
+  if (titleEl) setText(titleEl, extractTitle(payload.contentHtml, titleFallback));
+
+  // 5) 본문 삽입(M1: 단일 HTML 블록) — R-3.3, TC-INS-01/10.
+  progress('insert', '본문 삽입 중…', { percent: 70 });
+  try {
+    body.focus();
+    pasteHtml(body, payload.contentHtml);
+  } catch (e) {
+    return fail(ERR.INSERT_FAILED, `본문 삽입 실패: ${String(e)}`, '본문 삽입');
+  }
+  await sleep(jitter());
+
+  // 6) 서식 일괄 적용(best-effort) — 12.2-5, TC-INS-04. 정교한 툴바 조작은 후속.
+  applyFormat(body, format);
+
+  progress('insert', '삽입 완료', { percent: 85 });
+  return ok(undefined);
+}
+
+async function ensureFocus(body: HTMLElement): Promise<boolean> {
+  for (let i = 0; i < P.focusRetry; i++) {
+    body.click();
+    body.focus();
+    const active = body.ownerDocument.activeElement;
+    if (active === body || body.contains(active)) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
+function applyFormat(body: HTMLElement, format: FormatPrefs): void {
+  // M1 best-effort: 컨테이너에 인라인 스타일. 실제 SmartEditor 툴바 조작은 후속.
+  if (format.lineHeight) body.style.lineHeight = format.lineHeight;
+  if (format.fontFamily) body.style.fontFamily = format.fontFamily;
+  if (format.fontSize) body.style.fontSize = format.fontSize;
+}
+
+const jitter = (): number =>
+  P.jobDelayMin + Math.floor(Math.random() * (P.jobDelayMax - P.jobDelayMin));
+
+function fail(code: string, message: string, step: string): Result<void> {
+  progress('insert', message, { level: 'error' });
+  return err(appError(code, message, { failedStep: step })); // R-4.4 실패 작업 명시
+}
