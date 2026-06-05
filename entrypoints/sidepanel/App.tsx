@@ -55,6 +55,7 @@ export function App() {
   const [topics, setTopics] = useState<Topic[]>([]); // ② 키워드 분석 결과
   const [analyzing, setAnalyzing] = useState(false);
   const [topicMsg, setTopicMsg] = useState('');
+  const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
   const payloadId = useRef<string | null>(null);
 
   useEffect(
@@ -77,12 +78,19 @@ export function App() {
     if (!keyword.trim()) return;
     setAnalyzing(true);
     setTopicMsg('분석 중…');
+    setClockWarn(false);
     setTopics([]);
     const req: TopicCollectReq = { path: 'A', input: { seed: keyword.trim() } };
     const res = await sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', req);
     setAnalyzing(false);
     if (!res.ok) {
-      setTopicMsg(res.error.message);
+      // 서명 인증 실패(KEYWORD_AUTH)는 키 오류 또는 PC 시계 오차 → 전용 배너로 안내(R-0.5, 1-3).
+      if (res.error.code === 'KEYWORD_AUTH') {
+        setClockWarn(true);
+        setTopicMsg('');
+      } else {
+        setTopicMsg(res.error.message);
+      }
       return;
     }
     setTopics(res.value.topics);
@@ -160,6 +168,16 @@ export function App() {
             </button>
           </div>
           {topicMsg && <p className="mt-1 text-xs text-gray-500">{topicMsg}</p>}
+          {clockWarn && (
+            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <p className="font-semibold">⏰ 검색광고 인증 실패</p>
+              <p className="mt-1">
+                키가 맞아도 <b>PC 시계가 틀어지면</b> 서명이 거부됩니다(R-0.5). Windows{' '}
+                <b>설정 → 시간 및 언어 → 날짜 및 시간</b>에서 “지금 동기화”를 누른 뒤 다시 시도하세요.
+                계속 실패하면 설정에서 검색광고 키 3개(액세스 라이선스·Secret·CustomerID)를 확인하세요.
+              </p>
+            </div>
+          )}
           {topics.length > 0 && (
             <div className="mt-2 max-h-48 overflow-y-auto rounded border">
               <table className="w-full text-xs">
