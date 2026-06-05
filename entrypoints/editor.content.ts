@@ -31,28 +31,39 @@ export default defineContentScript({
 });
 
 async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
-  const payload = await getPayload(req.payloadId);
-  if (!payload) {
-    // TC-PAY-02: 빈 페이로드 → 진행 중단.
-    const e = appError(ERR.EMPTY_PAYLOAD, '삽입할 내용이 없어요.');
-    emitStepDone({ topicId: req.payloadId, status: 'failed', error: e });
-    return { ok: false, error: e };
-  }
+  // 예외가 새어나가면 sendResponse·step.done 둘 다 누락 → 사이드패널 무한 대기.
+  // 어떤 단계가 throw 해도 반드시 step.done(failed) + Result 로 안전 종료한다(R-4.4).
+  try {
+    const payload = await getPayload(req.payloadId);
+    if (!payload) {
+      // TC-PAY-02: 빈 페이로드 → 진행 중단.
+      const e = appError(ERR.EMPTY_PAYLOAD, '삽입할 내용이 없어요.');
+      emitStepDone({ topicId: req.payloadId, status: 'failed', error: e });
+      return { ok: false, error: e };
+    }
 
-  const settings = await loadSettings();
-  const insertRes = await runInsert(payload, settings.format, '제목 없음');
-  if (!insertRes.ok) {
-    emitStepDone({ topicId: payload.id, status: 'failed', error: insertRes.error });
-    return insertRes;
-  }
+    const settings = await loadSettings();
+    const insertRes = await runInsert(payload, settings.format, '제목 없음');
+    if (!insertRes.ok) {
+      emitStepDone({ topicId: payload.id, status: 'failed', error: insertRes.error });
+      return insertRes;
+    }
 
-  // ⑦ 임시저장(M1) — publishOption 기본 TEMP_SAVE.
-  const pubRes = await tempSave();
-  if (!pubRes.ok) {
-    emitStepDone({ topicId: payload.id, status: 'failed', error: pubRes.error });
-    return pubRes;
-  }
+    // ⑦ 임시저장(M1) — publishOption 기본 TEMP_SAVE.
+    const pubRes = await tempSave();
+    if (!pubRes.ok) {
+      emitStepDone({ topicId: payload.id, status: 'failed', error: pubRes.error });
+      return pubRes;
+    }
 
-  emitStepDone({ topicId: payload.id, status: 'done' }); // "삽입 완료" 신호(R-5.2)
-  return { ok: true, value: undefined };
+    emitStepDone({ topicId: payload.id, status: 'done' }); // "삽입 완료" 신호(R-5.2)
+    return { ok: true, value: undefined };
+  } catch (e) {
+    const error = appError(ERR.INSERT_FAILED, `삽입 중 예외: ${String(e)}`, {
+      failedStep: '삽입',
+    });
+    console.error('[PenFlow] handleInsert 예외', e);
+    emitStepDone({ topicId: req.payloadId, status: 'failed', error });
+    return { ok: false, error };
+  }
 }
