@@ -1,9 +1,10 @@
 // Side Panel 메인 UI — 09 S0. M1: 단일 플로우(주제→생성→삽입→임시저장).
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { strip } from '@/lib/markers';
 import type { GenerateReq, TopicCollectReq, TopicCollectRes } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
+import { downloadTopicsXlsx, parseTopicsFromBuffer } from '@/lib/sheet';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
 import type { PayloadOptions, Topic } from '@/types/models';
 
@@ -57,6 +58,7 @@ export function App() {
   const [topicMsg, setTopicMsg] = useState('');
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
   const payloadId = useRef<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null); // 키워드 목록 업로드(1-5)
 
   useEffect(
     () =>
@@ -95,6 +97,29 @@ export function App() {
     }
     setTopics(res.value.topics);
     setTopicMsg(res.value.topics.length ? '' : '결과 없음');
+  }
+
+  // 1-5 내보내기: 분석 결과 키워드 목록을 xlsx 로 저장.
+  function onExport() {
+    if (!topics.length) return;
+    const base = keyword.trim().replace(/\s+/g, '_') || 'keywords';
+    downloadTopicsXlsx(topics, `${base}.xlsx`);
+  }
+
+  // 1-5 가져오기: xlsx/csv 파일 → Topic[] 로드(왕복).
+  async function onImport(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 같은 파일 재선택 허용
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const loaded = parseTopicsFromBuffer(buf);
+      setClockWarn(false);
+      setTopics(loaded);
+      setTopicMsg(loaded.length ? `${loaded.length}건 불러옴` : '불러올 키워드 없음');
+    } catch (err) {
+      setTopicMsg(`불러오기 실패: ${String(err)}`);
+    }
   }
 
   async function onGenerate() {
@@ -166,6 +191,30 @@ export function App() {
             >
               {analyzing ? '분석 중…' : '🔍 키워드 분석'}
             </button>
+          </div>
+          <div className="mt-2 flex gap-2">
+            <button
+              className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+              onClick={() => fileInput.current?.click()}
+              type="button"
+            >
+              ⬆ 가져오기
+            </button>
+            <button
+              className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+              onClick={onExport}
+              disabled={!topics.length}
+              type="button"
+            >
+              ⬇ 엑셀 내보내기
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".xlsx,.csv"
+              className="hidden"
+              onChange={onImport}
+            />
           </div>
           {topicMsg && <p className="mt-1 text-xs text-gray-500">{topicMsg}</p>}
           {clockWarn && (
