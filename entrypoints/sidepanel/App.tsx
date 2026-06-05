@@ -1,15 +1,16 @@
 // Side Panel 메인 UI — 09 S0. M1: 단일 플로우(주제→생성→삽입→임시저장).
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
-import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { strip } from '@/lib/markers';
 import type { GenerateReq, TopicCollectReq, TopicCollectRes } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
-import { downloadTopicsXlsx, parseTopicsFromBuffer } from '@/lib/sheet';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
 import type { PayloadOptions, Topic } from '@/types/models';
 
 // 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
 const COMP_LABEL: Record<number, string> = { 1: '낮음', 2: '중간', 3: '높음' };
+// 출처 코드 → 표시 라벨(연관 검색어 플랫폼 배지).
+const SRC_LABEL: Record<string, string> = { naver: '네이버', google: '구글', youtube: '유튜브' };
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
 
@@ -53,15 +54,19 @@ export function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
   const [preview, setPreview] = useState('');
-  const [topicPath, setTopicPath] = useState<'A' | 'B'>('A'); // ② 경로 A 키워드 / B 블로그제목
-  const [blogId, setBlogId] = useState(''); // 경로 B: 대상 블로그
-  const [postCount, setPostCount] = useState(30); // 경로 B: 수집 개수
-  const [topics, setTopics] = useState<Topic[]>([]); // ② 수집 결과(A=키워드, B=제목)
+  const [topicTab, setTopicTab] = useState<'kw' | 'blog'>('kw'); // 키워드(검색량+연관) / 블로그 제목
+  const [blogId, setBlogId] = useState(''); // 블로그 제목: 대상 블로그
+  const [postCount, setPostCount] = useState(30); // 블로그 제목: 수집 개수
+  const [srcC, setSrcC] = useState({ naver: true, google: true, youtube: false }); // 연관 검색어 소스 on/off
+  // 결과·메시지는 경로별(A 검색량 / B 제목 / C 연관)로 보관.
+  const [topicsMap, setTopicsMap] = useState<Record<'A' | 'B' | 'C', Topic[]>>({ A: [], B: [], C: [] });
+  const [msgMap, setMsgMap] = useState<Record<'A' | 'B' | 'C', string>>({ A: '', B: '', C: '' });
   const [analyzing, setAnalyzing] = useState(false);
-  const [topicMsg, setTopicMsg] = useState('');
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
   const payloadId = useRef<string | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null); // 키워드 목록 업로드(1-5)
+  const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
+    setTopicsMap((m) => ({ ...m, [p]: list }));
+  const setMsgFor = (p: 'A' | 'B' | 'C', msg: string) => setMsgMap((m) => ({ ...m, [p]: msg }));
 
   useEffect(
     () =>
@@ -78,39 +83,62 @@ export function App() {
     [],
   );
 
-  // ② 경로 A: 키워드 검색량·경쟁도 분석(R-1.1). 행 클릭으로 주제 확정.
-  async function onAnalyze() {
+  // 키워드 검색: 검색량·경쟁도(A)와 연관 검색어(C)를 한 번에 수집해 같은 화면에 노출.
+  async function onKeywordSearch() {
     if (!keyword.trim()) return;
+    const seed = keyword.trim();
+    const sources = Object.entries(srcC)
+      .filter(([, on]) => on)
+      .map(([k]) => k);
     setAnalyzing(true);
-    setTopicMsg('분석 중…');
     setClockWarn(false);
-    setTopics([]);
-    const req: TopicCollectReq = { path: 'A', input: { seed: keyword.trim() } };
-    const res = await sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', req);
+    setMsgFor('A', '검색량 분석 중…');
+    setMsgFor('C', sources.length ? '연관 검색어 수집 중…' : '소스 미선택');
+    setTopicsFor('A', []);
+    setTopicsFor('C', []);
+
+    const aReq = sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', {
+      path: 'A',
+      input: { seed },
+    });
+    const cReq = sources.length
+      ? sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', { path: 'C', input: { seed, sources } })
+      : Promise.resolve(null);
+    const [aRes, cRes] = await Promise.all([aReq, cReq]);
     setAnalyzing(false);
-    if (!res.ok) {
-      // 서명 인증 실패(KEYWORD_AUTH)는 키 오류 또는 PC 시계 오차 → 전용 배너로 안내(R-0.5, 1-3).
-      if (res.error.code === 'KEYWORD_AUTH') {
+
+    // 검색량(A) — 인증 실패는 시계 오차 배너로(R-0.5, 1-3).
+    if (!aRes.ok) {
+      if (aRes.error.code === 'KEYWORD_AUTH') {
         setClockWarn(true);
-        setTopicMsg('');
+        setMsgFor('A', '');
       } else {
-        setTopicMsg(res.error.message);
+        setMsgFor('A', aRes.error.message);
       }
-      return;
+    } else {
+      setTopicsFor('A', aRes.value.topics);
+      setMsgFor('A', aRes.value.topics.length ? '' : '검색량 결과 없음');
     }
-    setTopics(res.value.topics);
-    setTopicMsg(res.value.topics.length ? '' : '결과 없음');
+
+    // 연관 검색어(C) — 키 불필요, A 실패와 무관하게 표시.
+    if (cRes) {
+      if (!cRes.ok) setMsgFor('C', cRes.error.message);
+      else {
+        setTopicsFor('C', cRes.value.topics);
+        setMsgFor('C', cRes.value.topics.length ? '' : '연관 검색어 없음');
+      }
+    }
   }
 
-  // 경로 B: 현재 보고 있는 탭 URL 에서 blogId 자동 인식(2-1).
+  // 블로그 제목: 현재 보고 있는 탭 URL 에서 blogId 자동 인식(2-1).
   async function onDetectBlog() {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const id = parseBlogId(tab?.url ?? '');
     if (id) {
       setBlogId(id);
-      setTopicMsg(`인식: ${id}`);
+      setMsgFor('B', `인식: ${id}`);
     } else {
-      setTopicMsg('현재 탭에서 블로그 아이디를 찾지 못했어요.');
+      setMsgFor('B', '현재 탭에서 블로그 아이디를 찾지 못했어요.');
     }
   }
 
@@ -118,9 +146,9 @@ export function App() {
   async function onCollectTitles() {
     if (!blogId.trim()) return;
     setAnalyzing(true);
-    setTopicMsg('제목 수집 중…');
+    setMsgFor('B', '제목 수집 중…');
     setClockWarn(false);
-    setTopics([]);
+    setTopicsFor('B', []);
     const req: TopicCollectReq = {
       path: 'B',
       input: { seed: blogId.trim(), count: postCount },
@@ -128,34 +156,11 @@ export function App() {
     const res = await sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', req);
     setAnalyzing(false);
     if (!res.ok) {
-      setTopicMsg(res.error.message);
+      setMsgFor('B', res.error.message);
       return;
     }
-    setTopics(res.value.topics);
-    setTopicMsg(res.value.topics.length ? '' : '제목 없음');
-  }
-
-  // 1-5 내보내기: 분석 결과 키워드 목록을 xlsx 로 저장.
-  function onExport() {
-    if (!topics.length) return;
-    const base = keyword.trim().replace(/\s+/g, '_') || 'keywords';
-    downloadTopicsXlsx(topics, `${base}.xlsx`);
-  }
-
-  // 1-5 가져오기: xlsx/csv 파일 → Topic[] 로드(왕복).
-  async function onImport(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // 같은 파일 재선택 허용
-    if (!file) return;
-    try {
-      const buf = await file.arrayBuffer();
-      const loaded = parseTopicsFromBuffer(buf);
-      setClockWarn(false);
-      setTopics(loaded);
-      setTopicMsg(loaded.length ? `${loaded.length}건 불러옴` : '불러올 키워드 없음');
-    } catch (err) {
-      setTopicMsg(`불러오기 실패: ${String(err)}`);
-    }
+    setTopicsFor('B', res.value.topics);
+    setMsgFor('B', res.value.topics.length ? '' : '제목 없음');
   }
 
   async function onGenerate() {
@@ -210,13 +215,13 @@ export function App() {
 
       <main className="flex-1 space-y-4 overflow-y-auto p-4">
         <div>
-          {/* ② 주제 선정 경로 선택 — A 키워드 분석 / B 경쟁 블로그 제목 */}
+          {/* ② 주제 선정 — 키워드(검색량+연관) / 블로그 제목 */}
           <div className="mb-2 flex gap-1">
-            <PathTab label="🔍 키워드" on={topicPath === 'A'} onClick={() => setTopicPath('A')} />
-            <PathTab label="📋 블로그 제목" on={topicPath === 'B'} onClick={() => setTopicPath('B')} />
+            <PathTab label="🔍 키워드" on={topicTab === 'kw'} onClick={() => setTopicTab('kw')} />
+            <PathTab label="📋 블로그 제목" on={topicTab === 'blog'} onClick={() => setTopicTab('blog')} />
           </div>
 
-          {topicPath === 'A' ? (
+          {topicTab === 'kw' ? (
             <>
               <label className="mb-1 block text-xs text-gray-500">주제 (키워드)</label>
               <div className="flex gap-2">
@@ -228,36 +233,52 @@ export function App() {
                 />
                 <button
                   className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
-                  onClick={onAnalyze}
+                  onClick={onKeywordSearch}
                   disabled={analyzing || !keyword.trim()}
                   type="button"
-                  title="검색광고 키워드 분석(검색량·경쟁도)"
+                  title="검색량·경쟁도 + 연관 검색어 한 번에 조회"
                 >
-                  {analyzing ? '분석 중…' : '🔍 키워드 분석'}
+                  {analyzing ? '검색 중…' : '🔍 검색'}
                 </button>
               </div>
-              <div className="mt-2 flex gap-2">
-                <button
-                  className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
-                  onClick={() => fileInput.current?.click()}
-                  type="button"
-                >
-                  ⬆ 가져오기
-                </button>
-                <button
-                  className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
-                  onClick={onExport}
-                  disabled={!topics.length}
-                  type="button"
-                >
-                  ⬇ 엑셀 내보내기
-                </button>
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept=".xlsx,.csv"
-                  className="hidden"
-                  onChange={onImport}
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <span className="text-[11px] text-gray-400">연관 소스</span>
+                <SrcToggle label="네이버" on={srcC.naver} onToggle={(v) => setSrcC((s) => ({ ...s, naver: v }))} />
+                <SrcToggle label="구글" on={srcC.google} onToggle={(v) => setSrcC((s) => ({ ...s, google: v }))} />
+                <SrcToggle label="유튜브" on={srcC.youtube} onToggle={(v) => setSrcC((s) => ({ ...s, youtube: v }))} />
+              </div>
+
+              {clockWarn && (
+                <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  <p className="font-semibold">⏰ 검색광고 인증 실패</p>
+                  <p className="mt-1">
+                    키가 맞아도 <b>PC 시계가 틀어지면</b> 서명이 거부됩니다(R-0.5). Windows{' '}
+                    <b>설정 → 시간 및 언어 → 날짜 및 시간</b>에서 “지금 동기화”를 누른 뒤 다시 시도하세요.
+                    계속 실패하면 설정에서 검색광고 키 3개(액세스 라이선스·Secret·CustomerID)를 확인하세요.
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-3 space-y-3">
+                <ResultTable
+                  title="검색량·경쟁도"
+                  kind="metrics"
+                  topics={topicsMap.A}
+                  msg={msgMap.A}
+                  onPick={(k) => {
+                    setKeyword(k);
+                    setMsgFor('A', `주제 확정: ${k}`);
+                  }}
+                />
+                <ResultTable
+                  title="연관 검색어"
+                  kind="related"
+                  topics={topicsMap.C}
+                  msg={msgMap.C}
+                  onPick={(k) => {
+                    setKeyword(k);
+                    setMsgFor('C', `주제 확정: ${k}`);
+                  }}
                 />
               </div>
             </>
@@ -299,64 +320,19 @@ export function App() {
                   {analyzing ? '수집 중…' : '📋 제목 수집'}
                 </button>
               </div>
+              <div className="mt-3">
+                <ResultTable
+                  title="게시물 제목"
+                  kind="titles"
+                  topics={topicsMap.B}
+                  msg={msgMap.B}
+                  onPick={(k) => {
+                    setKeyword(k);
+                    setMsgFor('B', `주제 확정: ${k}`);
+                  }}
+                />
+              </div>
             </>
-          )}
-
-          {topicMsg && <p className="mt-1 text-xs text-gray-500">{topicMsg}</p>}
-          {clockWarn && (
-            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              <p className="font-semibold">⏰ 검색광고 인증 실패</p>
-              <p className="mt-1">
-                키가 맞아도 <b>PC 시계가 틀어지면</b> 서명이 거부됩니다(R-0.5). Windows{' '}
-                <b>설정 → 시간 및 언어 → 날짜 및 시간</b>에서 “지금 동기화”를 누른 뒤 다시 시도하세요.
-                계속 실패하면 설정에서 검색광고 키 3개(액세스 라이선스·Secret·CustomerID)를 확인하세요.
-              </p>
-            </div>
-          )}
-          {topics.length > 0 && (
-            <div className="mt-2 max-h-48 overflow-y-auto rounded border">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-gray-50 text-gray-500">
-                  {topicPath === 'A' ? (
-                    <tr>
-                      <th className="px-2 py-1 text-left font-normal">키워드</th>
-                      <th className="px-2 py-1 text-right font-normal">검색량</th>
-                      <th className="px-2 py-1 text-center font-normal">경쟁도</th>
-                    </tr>
-                  ) : (
-                    <tr>
-                      <th className="px-2 py-1 text-left font-normal">제목 (클릭해 주제 확정)</th>
-                    </tr>
-                  )}
-                </thead>
-                <tbody>
-                  {topics.map((t) => (
-                    <tr
-                      key={t.id}
-                      className="cursor-pointer border-t hover:bg-blue-50"
-                      onClick={() => {
-                        setKeyword(t.keyword);
-                        setTopics([]);
-                        setTopicMsg(`주제 확정: ${t.keyword}`);
-                      }}
-                      title="클릭하면 주제로 확정"
-                    >
-                      <td className="px-2 py-1">{t.keyword}</td>
-                      {topicPath === 'A' && (
-                        <>
-                          <td className="px-2 py-1 text-right">
-                            {t.metrics?.volume?.toLocaleString() ?? '-'}
-                          </td>
-                          <td className="px-2 py-1 text-center">
-                            {t.metrics?.competition ? (COMP_LABEL[t.metrics.competition] ?? '-') : '-'}
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           )}
         </div>
         <div>
@@ -486,6 +462,173 @@ function PathTab(props: { label: string; on: boolean; onClick: () => void }) {
     >
       {props.label}
     </button>
+  );
+}
+
+// 결과 테이블 컬럼 정의 — 정렬값(sortVal) + 셀 렌더(cell).
+interface ResultCol {
+  id: string;
+  label: string;
+  align: 'left' | 'right' | 'center';
+  sortVal: (t: Topic) => string | number;
+  cell: (t: Topic) => ReactNode;
+}
+
+function colsFor(kind: 'metrics' | 'related' | 'titles'): ResultCol[] {
+  const keywordCol: ResultCol = {
+    id: 'keyword',
+    label: kind === 'titles' ? '제목' : kind === 'related' ? '검색어' : '키워드',
+    align: 'left',
+    sortVal: (t) => t.keyword,
+    cell: (t) => t.keyword,
+  };
+  if (kind === 'metrics') {
+    return [
+      keywordCol,
+      {
+        id: 'vol',
+        label: '검색량',
+        align: 'right',
+        sortVal: (t) => t.metrics?.volume ?? -1,
+        cell: (t) => t.metrics?.volume?.toLocaleString() ?? '-',
+      },
+      {
+        id: 'comp',
+        label: '경쟁도',
+        align: 'center',
+        sortVal: (t) => t.metrics?.competition ?? 0,
+        cell: (t) => (t.metrics?.competition ? (COMP_LABEL[t.metrics.competition] ?? '-') : '-'),
+      },
+    ];
+  }
+  if (kind === 'related') {
+    return [
+      keywordCol,
+      {
+        id: 'plat',
+        label: '플랫폼',
+        align: 'left',
+        sortVal: (t) => t.sources?.length ?? 0,
+        cell: (t) => (
+          <span className="flex flex-wrap gap-1">
+            {(t.sources ?? []).map((s) => (
+              <span key={s} className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600">
+                {SRC_LABEL[s] ?? s}
+              </span>
+            ))}
+          </span>
+        ),
+      },
+    ];
+  }
+  return [keywordCol];
+}
+
+// ② 결과 테이블 — 검색량(metrics)·연관(related)·제목(titles).
+// 다중 정렬: 헤더 클릭 순서 = 우선순위, 클릭마다 ▲→▼→해제.
+function ResultTable(props: {
+  title: string;
+  subtitle?: string;
+  kind: 'metrics' | 'related' | 'titles';
+  topics: Topic[];
+  msg: string;
+  onPick: (keyword: string) => void;
+}) {
+  const { title, subtitle, kind, topics, msg, onPick } = props;
+  const [sort, setSort] = useState<{ id: string; dir: 1 | -1 }[]>([]);
+  if (!topics.length && !msg) return null; // 검색 전엔 숨김
+
+  const cols = colsFor(kind);
+  // 다중 정렬: sort 배열 순서대로 첫 비교에서 갈리면 결정.
+  const sorted = sort.length
+    ? [...topics].sort((a, b) => {
+        for (const s of sort) {
+          const col = cols.find((c) => c.id === s.id);
+          if (!col) continue;
+          const av = col.sortVal(a);
+          const bv = col.sortVal(b);
+          if (av < bv) return -s.dir;
+          if (av > bv) return s.dir;
+        }
+        return 0;
+      })
+    : topics;
+
+  // 헤더 클릭: 없으면 ▲ 추가 → ▼ 전환 → 해제. 클릭 순서가 정렬 우선순위.
+  const toggleSort = (id: string) =>
+    setSort((prev) => {
+      const i = prev.findIndex((s) => s.id === id);
+      if (i < 0) return [...prev, { id, dir: 1 }];
+      if (prev[i]!.dir === 1) return prev.map((s) => (s.id === id ? { id, dir: -1 as const } : s));
+      return prev.filter((s) => s.id !== id);
+    });
+  const sortMark = (id: string) => {
+    const i = sort.findIndex((s) => s.id === id);
+    if (i < 0) return '';
+    const arrow = sort[i]!.dir === 1 ? ' ▲' : ' ▼';
+    return sort.length > 1 ? `${arrow}${i + 1}` : arrow; // 다중이면 우선순위 번호
+  };
+  const align = (a: ResultCol['align']) =>
+    a === 'right' ? 'text-right' : a === 'center' ? 'text-center' : 'text-left';
+
+  return (
+    <div className="rounded border">
+      <div className="flex items-center gap-2 border-b bg-gray-50 px-2 py-1">
+        <span className="text-xs font-semibold text-gray-700">
+          {title}
+          {topics.length > 0 && <span className="ml-1 text-[10px] text-gray-400">({topics.length})</span>}
+          {subtitle && <span className="ml-1 text-[10px] font-normal text-gray-400">· {subtitle}</span>}
+        </span>
+      </div>
+      {msg && <p className="px-2 py-1 text-xs text-gray-500">{msg}</p>}
+      {topics.length > 0 && (
+        <div className="max-h-44 overflow-y-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-10 bg-white text-gray-500">
+              <tr>
+                {cols.map((c) => (
+                  <th
+                    key={c.id}
+                    className={`cursor-pointer select-none px-2 py-1 font-normal hover:text-gray-800 ${align(c.align)}`}
+                    onClick={() => toggleSort(c.id)}
+                    title="클릭: 정렬 추가 → 방향전환 → 해제 (클릭 순서 = 우선순위)"
+                  >
+                    {c.label}
+                    {sortMark(c.id)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((t) => (
+                <tr
+                  key={t.id}
+                  className="cursor-pointer border-t hover:bg-blue-50"
+                  onClick={() => onPick(t.keyword)}
+                  title="클릭하면 주제로 확정"
+                >
+                  {cols.map((c) => (
+                    <td key={c.id} className={`px-2 py-1 ${align(c.align)}`}>
+                      {c.cell(t)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ② 연관 검색어 소스 on/off 토글.
+function SrcToggle(props: { label: string; on: boolean; onToggle: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-1 text-xs">
+      <input type="checkbox" checked={props.on} onChange={(e) => props.onToggle(e.target.checked)} />
+      {props.label}
+    </label>
   );
 }
 

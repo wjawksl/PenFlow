@@ -11,9 +11,14 @@ const topics: Topic[] = [
 describe('sheet 입출력(1-5)', () => {
   it('Topic → 행: 경쟁도 라벨 변환', () => {
     const rows = topicsToRows(topics);
-    expect(rows[0]).toEqual({ 키워드: '캠핑', 검색량: 1200, 경쟁도: '높음' });
+    expect(rows[0]).toEqual({ 키워드: '캠핑', 검색량: 1200, 경쟁도: '높음', 출처: '' });
     expect(rows[1]?.경쟁도).toBe('낮음');
-    expect(rows[2]).toEqual({ 키워드: '경량텐트', 검색량: '', 경쟁도: '' });
+    expect(rows[2]).toEqual({ 키워드: '경량텐트', 검색량: '', 경쟁도: '', 출처: '' });
+  });
+
+  it('출처(source) 보존 왕복', () => {
+    const back = rowsToTopics(topicsToRows([{ id: 'x', keyword: '캠핑카', source: 'youtube' }]));
+    expect(back[0]?.source).toBe('youtube');
   });
 
   it('행 → Topic 왕복: 키워드·검색량·경쟁도 보존', () => {

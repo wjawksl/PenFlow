@@ -11,6 +11,7 @@ export interface TopicRow {
   키워드: string;
   검색량: number | '';
   경쟁도: string;
+  출처?: string;
 }
 
 export function topicsToRows(topics: Topic[]): TopicRow[] {
@@ -18,6 +19,7 @@ export function topicsToRows(topics: Topic[]): TopicRow[] {
     키워드: t.keyword,
     검색량: t.metrics?.volume ?? '',
     경쟁도: t.metrics?.competition ? (COMP_LABEL[t.metrics.competition] ?? '') : '',
+    출처: t.sources?.join('·') ?? t.source ?? '',
   }));
 }
 
@@ -27,9 +29,11 @@ export function rowsToTopics(rows: TopicRow[]): Topic[] {
     .map((r, i) => {
       const vol = Number(r.검색량);
       const comp = LABEL_COMP[String(r.경쟁도 ?? '').trim()];
+      const source = String(r.출처 ?? '').trim();
       return {
         id: `kw_imp_${Date.now()}_${i}`,
         keyword: String(r.키워드).trim(),
+        ...(source ? { source } : {}),
         metrics: {
           volume: Number.isFinite(vol) ? vol : 0,
           competition: comp ?? 0,

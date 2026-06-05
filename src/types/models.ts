@@ -36,6 +36,8 @@ export interface Topic {
   id: string;
   keyword: string;
   title?: string;
+  source?: string; // ② 경로 C: 단일 출처(naver/google/youtube)
+  sources?: string[]; // ② 경로 C: 교차 등장 출처 목록(여러 소스에 동시 등장 시)
   metrics?: { volume?: number; competition?: number };
 }
 
