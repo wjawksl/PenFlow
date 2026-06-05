@@ -21,4 +21,6 @@ export const ERR = {
   INSERT_FAILED: 'INSERT_FAILED',
   EMPTY_PAYLOAD: 'EMPTY_PAYLOAD',
   NO_CREDENTIAL: 'NO_CREDENTIAL',
+  KEYWORD_AUTH: 'KEYWORD_AUTH', // 검색광고 서명/키/시계 오차(R-0.5)
+  KEYWORD_FAILED: 'KEYWORD_FAILED', // 검색광고 호출 실패(네트워크·타임아웃·서버)
 } as const;

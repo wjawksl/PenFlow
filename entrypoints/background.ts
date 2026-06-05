@@ -4,10 +4,17 @@ import { compose } from '@/components/composer';
 import { generateBody } from '@/components/generator';
 import { buildPayload, savePayload } from '@/components/payload';
 import { getActiveCredential, loadSettings } from '@/components/settings';
+import { collectTopics } from '@/components/topic';
 import { wireProgressBroadcast } from '@/lib/bus';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
-import type { GenerateReq, InsertStartReq, Msg } from '@/lib/messaging';
+import type {
+  GenerateReq,
+  InsertStartReq,
+  Msg,
+  TopicCollectReq,
+  TopicCollectRes,
+} from '@/lib/messaging';
 import type { AppError, Result } from '@/types/common';
 
 export default defineBackground(() => {
@@ -21,6 +28,10 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     if (msg.kind !== 'cmd') return false;
 
+    if (msg.name === 'topic.collect') {
+      handleTopicCollect(msg.payload as TopicCollectReq).then(sendResponse);
+      return true; // 비동기 응답
+    }
     if (msg.name === 'generate.run') {
       handleGenerate(msg.payload as GenerateReq).then(sendResponse);
       return true; // 비동기 응답
@@ -32,6 +43,19 @@ export default defineBackground(() => {
     return false;
   });
 });
+
+// ② 주제 수집(M2 WP1). api.naver.com CORS 회피 위해 background 에서 fetch.
+async function handleTopicCollect(req: TopicCollectReq): Promise<Result<TopicCollectRes>> {
+  const settings = await loadSettings();
+  progress('topic', '키워드 분석 중…', { percent: 30 });
+  const res = await collectTopics(req, settings.keywordToolCredential);
+  if (!res.ok) {
+    progress('topic', res.error.message, { level: 'error' });
+    return res;
+  }
+  progress('topic', `키워드 ${res.value.length}건 수집`, { percent: 100 });
+  return { ok: true, value: { topics: res.value } };
+}
 
 // ③ 생성 → ⑤ 저장. M1: 키 1개, 순환 없음(R-0.2는 M2).
 async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: string }>> {

@@ -15,7 +15,8 @@ export default defineConfig({
     name: '펜플로우',
     // M1 범위: Side Panel(UI) + Background(두뇌) + Editor CS(삽입) — 05 §9.
     permissions: ['storage', 'sidePanel', 'scripting', 'tabs'],
-    host_permissions: ['https://blog.naver.com/*'],
+    // api.searchad.naver.com: 검색광고 키워드도구(② 경로 A). background fetch 로 CORS 회피(M2).
+    host_permissions: ['https://blog.naver.com/*', 'https://api.searchad.naver.com/*'],
     action: {},
     side_panel: {
       default_path: 'sidepanel/index.html',

@@ -2,10 +2,13 @@
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { strip } from '@/lib/markers';
-import type { GenerateReq } from '@/lib/messaging';
+import type { GenerateReq, TopicCollectReq, TopicCollectRes } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
-import type { PayloadOptions } from '@/types/models';
+import type { PayloadOptions, Topic } from '@/types/models';
+
+// 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
+const COMP_LABEL: Record<number, string> = { 1: '낮음', 2: '중간', 3: '높음' };
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
 
@@ -49,6 +52,9 @@ export function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
   const [preview, setPreview] = useState('');
+  const [topics, setTopics] = useState<Topic[]>([]); // ② 키워드 분석 결과
+  const [analyzing, setAnalyzing] = useState(false);
+  const [topicMsg, setTopicMsg] = useState('');
   const payloadId = useRef<string | null>(null);
 
   useEffect(
@@ -65,6 +71,23 @@ export function App() {
       }),
     [],
   );
+
+  // ② 경로 A: 키워드 검색량·경쟁도 분석(R-1.1). 행 클릭으로 주제 확정.
+  async function onAnalyze() {
+    if (!keyword.trim()) return;
+    setAnalyzing(true);
+    setTopicMsg('분석 중…');
+    setTopics([]);
+    const req: TopicCollectReq = { path: 'A', input: { seed: keyword.trim() } };
+    const res = await sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', req);
+    setAnalyzing(false);
+    if (!res.ok) {
+      setTopicMsg(res.error.message);
+      return;
+    }
+    setTopics(res.value.topics);
+    setTopicMsg(res.value.topics.length ? '' : '결과 없음');
+  }
 
   async function onGenerate() {
     setPhase('generating');
@@ -119,12 +142,59 @@ export function App() {
       <main className="flex-1 space-y-4 overflow-y-auto p-4">
         <div>
           <label className="mb-1 block text-xs text-gray-500">주제</label>
-          <input
-            className="w-full rounded border px-2 py-1"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="예: 캠핑 초보 장비"
-          />
+          <div className="flex gap-2">
+            <input
+              className="w-full rounded border px-2 py-1"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="예: 캠핑 초보 장비"
+            />
+            <button
+              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+              onClick={onAnalyze}
+              disabled={analyzing || !keyword.trim()}
+              type="button"
+              title="검색광고 키워드 분석(검색량·경쟁도)"
+            >
+              {analyzing ? '분석 중…' : '🔍 키워드 분석'}
+            </button>
+          </div>
+          {topicMsg && <p className="mt-1 text-xs text-gray-500">{topicMsg}</p>}
+          {topics.length > 0 && (
+            <div className="mt-2 max-h-48 overflow-y-auto rounded border">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-gray-50 text-gray-500">
+                  <tr>
+                    <th className="px-2 py-1 text-left font-normal">키워드</th>
+                    <th className="px-2 py-1 text-right font-normal">검색량</th>
+                    <th className="px-2 py-1 text-center font-normal">경쟁도</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topics.map((t) => (
+                    <tr
+                      key={t.id}
+                      className="cursor-pointer border-t hover:bg-blue-50"
+                      onClick={() => {
+                        setKeyword(t.keyword);
+                        setTopics([]);
+                        setTopicMsg(`주제 확정: ${t.keyword}`);
+                      }}
+                      title="클릭하면 이 키워드를 주제로 확정"
+                    >
+                      <td className="px-2 py-1">{t.keyword}</td>
+                      <td className="px-2 py-1 text-right">
+                        {t.metrics?.volume?.toLocaleString() ?? '-'}
+                      </td>
+                      <td className="px-2 py-1 text-center">
+                        {t.metrics?.competition ? (COMP_LABEL[t.metrics.competition] ?? '-') : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
         <div>
           <label className="mb-1 block text-xs text-gray-500">프롬프트</label>

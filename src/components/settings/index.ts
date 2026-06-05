@@ -35,3 +35,27 @@ export async function setAiKey(apiKey: string, model: string): Promise<void> {
 export function getActiveCredential(settings: Settings): Credential | null {
   return settings.aiTextCredentials[0] ?? null;
 }
+
+/** ② 검색광고 키워드도구 자격증명 저장(M2 WP1). 셋 다 있어야 검색량·경쟁도 조회. */
+export async function setKeywordToolCred(
+  apiKey: string,
+  secret: string,
+  customerId: string,
+): Promise<void> {
+  const settings = await loadSettings();
+  const a = apiKey.trim();
+  const s = secret.trim();
+  const c = customerId.trim();
+  if (!a || !s || !c) {
+    // 일부만 입력 시 슬롯 비움(부분 자격증명 방지).
+    const { keywordToolCredential: _drop, ...rest } = settings;
+    await saveSettings(rest);
+    return;
+  }
+  const cred: Credential = {
+    id: 'keyword_tool_1',
+    kind: 'keyword_tool',
+    fields: { apiKey: a, secret: s, customerId: c },
+  };
+  await saveSettings({ ...settings, keywordToolCredential: cred });
+}
