@@ -33,9 +33,10 @@ export interface ImageSourceAdapter {
 export interface TopicSourceAdapter {
   readonly id: string;
   collect(req: {
-    seed: string;
+    seed: string; // 경로 A: 키워드, 경로 B: blogId
     credential?: Credential;
     signal?: AbortSignal;
+    count?: number; // 경로 B: 수집할 게시물 개수(경로 A 는 무시)
   }): Promise<Result<Topic[]>>; // 중단 가능(R-1.2)
 }
 

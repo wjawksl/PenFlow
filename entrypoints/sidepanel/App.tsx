@@ -53,7 +53,10 @@ export function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
   const [preview, setPreview] = useState('');
-  const [topics, setTopics] = useState<Topic[]>([]); // ② 키워드 분석 결과
+  const [topicPath, setTopicPath] = useState<'A' | 'B'>('A'); // ② 경로 A 키워드 / B 블로그제목
+  const [blogId, setBlogId] = useState(''); // 경로 B: 대상 블로그
+  const [postCount, setPostCount] = useState(30); // 경로 B: 수집 개수
+  const [topics, setTopics] = useState<Topic[]>([]); // ② 수집 결과(A=키워드, B=제목)
   const [analyzing, setAnalyzing] = useState(false);
   const [topicMsg, setTopicMsg] = useState('');
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
@@ -97,6 +100,39 @@ export function App() {
     }
     setTopics(res.value.topics);
     setTopicMsg(res.value.topics.length ? '' : '결과 없음');
+  }
+
+  // 경로 B: 현재 보고 있는 탭 URL 에서 blogId 자동 인식(2-1).
+  async function onDetectBlog() {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const id = parseBlogId(tab?.url ?? '');
+    if (id) {
+      setBlogId(id);
+      setTopicMsg(`인식: ${id}`);
+    } else {
+      setTopicMsg('현재 탭에서 블로그 아이디를 찾지 못했어요.');
+    }
+  }
+
+  // 경로 B: 블로그 게시물 제목 N건 수집(2-2). 제목 행 클릭 → 주제 확정(2-3).
+  async function onCollectTitles() {
+    if (!blogId.trim()) return;
+    setAnalyzing(true);
+    setTopicMsg('제목 수집 중…');
+    setClockWarn(false);
+    setTopics([]);
+    const req: TopicCollectReq = {
+      path: 'B',
+      input: { seed: blogId.trim(), count: postCount },
+    };
+    const res = await sendCmd<TopicCollectReq, TopicCollectRes>('topic.collect', req);
+    setAnalyzing(false);
+    if (!res.ok) {
+      setTopicMsg(res.error.message);
+      return;
+    }
+    setTopics(res.value.topics);
+    setTopicMsg(res.value.topics.length ? '' : '제목 없음');
   }
 
   // 1-5 내보내기: 분석 결과 키워드 목록을 xlsx 로 저장.
@@ -174,48 +210,98 @@ export function App() {
 
       <main className="flex-1 space-y-4 overflow-y-auto p-4">
         <div>
-          <label className="mb-1 block text-xs text-gray-500">주제</label>
-          <div className="flex gap-2">
-            <input
-              className="w-full rounded border px-2 py-1"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="예: 캠핑 초보 장비"
-            />
-            <button
-              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
-              onClick={onAnalyze}
-              disabled={analyzing || !keyword.trim()}
-              type="button"
-              title="검색광고 키워드 분석(검색량·경쟁도)"
-            >
-              {analyzing ? '분석 중…' : '🔍 키워드 분석'}
-            </button>
+          {/* ② 주제 선정 경로 선택 — A 키워드 분석 / B 경쟁 블로그 제목 */}
+          <div className="mb-2 flex gap-1">
+            <PathTab label="🔍 키워드" on={topicPath === 'A'} onClick={() => setTopicPath('A')} />
+            <PathTab label="📋 블로그 제목" on={topicPath === 'B'} onClick={() => setTopicPath('B')} />
           </div>
-          <div className="mt-2 flex gap-2">
-            <button
-              className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
-              onClick={() => fileInput.current?.click()}
-              type="button"
-            >
-              ⬆ 가져오기
-            </button>
-            <button
-              className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
-              onClick={onExport}
-              disabled={!topics.length}
-              type="button"
-            >
-              ⬇ 엑셀 내보내기
-            </button>
-            <input
-              ref={fileInput}
-              type="file"
-              accept=".xlsx,.csv"
-              className="hidden"
-              onChange={onImport}
-            />
-          </div>
+
+          {topicPath === 'A' ? (
+            <>
+              <label className="mb-1 block text-xs text-gray-500">주제 (키워드)</label>
+              <div className="flex gap-2">
+                <input
+                  className="w-full rounded border px-2 py-1"
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="예: 캠핑"
+                />
+                <button
+                  className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+                  onClick={onAnalyze}
+                  disabled={analyzing || !keyword.trim()}
+                  type="button"
+                  title="검색광고 키워드 분석(검색량·경쟁도)"
+                >
+                  {analyzing ? '분석 중…' : '🔍 키워드 분석'}
+                </button>
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button
+                  className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50"
+                  onClick={() => fileInput.current?.click()}
+                  type="button"
+                >
+                  ⬆ 가져오기
+                </button>
+                <button
+                  className="rounded border px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                  onClick={onExport}
+                  disabled={!topics.length}
+                  type="button"
+                >
+                  ⬇ 엑셀 내보내기
+                </button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept=".xlsx,.csv"
+                  className="hidden"
+                  onChange={onImport}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="mb-1 block text-xs text-gray-500">대상 블로그 아이디</label>
+              <div className="flex gap-2">
+                <input
+                  className="w-full rounded border px-2 py-1"
+                  value={blogId}
+                  onChange={(e) => setBlogId(e.target.value)}
+                  placeholder="예: naver_blog_id"
+                />
+                <button
+                  className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50"
+                  onClick={onDetectBlog}
+                  type="button"
+                  title="현재 보고 있는 탭에서 블로그 아이디 인식"
+                >
+                  현재 탭
+                </button>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <label className="text-xs text-gray-500">개수</label>
+                <input
+                  className="w-16 rounded border px-2 py-1 text-xs"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={postCount}
+                  onChange={(e) => setPostCount(Number(e.target.value) || 1)}
+                />
+                <button
+                  className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                  onClick={onCollectTitles}
+                  disabled={analyzing || !blogId.trim()}
+                  type="button"
+                >
+                  {analyzing ? '수집 중…' : '📋 제목 수집'}
+                </button>
+              </div>
+            </>
+          )}
+
           {topicMsg && <p className="mt-1 text-xs text-gray-500">{topicMsg}</p>}
           {clockWarn && (
             <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -231,11 +317,17 @@ export function App() {
             <div className="mt-2 max-h-48 overflow-y-auto rounded border">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-gray-50 text-gray-500">
-                  <tr>
-                    <th className="px-2 py-1 text-left font-normal">키워드</th>
-                    <th className="px-2 py-1 text-right font-normal">검색량</th>
-                    <th className="px-2 py-1 text-center font-normal">경쟁도</th>
-                  </tr>
+                  {topicPath === 'A' ? (
+                    <tr>
+                      <th className="px-2 py-1 text-left font-normal">키워드</th>
+                      <th className="px-2 py-1 text-right font-normal">검색량</th>
+                      <th className="px-2 py-1 text-center font-normal">경쟁도</th>
+                    </tr>
+                  ) : (
+                    <tr>
+                      <th className="px-2 py-1 text-left font-normal">제목 (클릭해 주제 확정)</th>
+                    </tr>
+                  )}
                 </thead>
                 <tbody>
                   {topics.map((t) => (
@@ -247,15 +339,19 @@ export function App() {
                         setTopics([]);
                         setTopicMsg(`주제 확정: ${t.keyword}`);
                       }}
-                      title="클릭하면 이 키워드를 주제로 확정"
+                      title="클릭하면 주제로 확정"
                     >
                       <td className="px-2 py-1">{t.keyword}</td>
-                      <td className="px-2 py-1 text-right">
-                        {t.metrics?.volume?.toLocaleString() ?? '-'}
-                      </td>
-                      <td className="px-2 py-1 text-center">
-                        {t.metrics?.competition ? (COMP_LABEL[t.metrics.competition] ?? '-') : '-'}
-                      </td>
+                      {topicPath === 'A' && (
+                        <>
+                          <td className="px-2 py-1 text-right">
+                            {t.metrics?.volume?.toLocaleString() ?? '-'}
+                          </td>
+                          <td className="px-2 py-1 text-center">
+                            {t.metrics?.competition ? (COMP_LABEL[t.metrics.competition] ?? '-') : '-'}
+                          </td>
+                        </>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -376,6 +472,39 @@ export function App() {
       </footer>
     </div>
   );
+}
+
+// ② 경로 탭 버튼.
+function PathTab(props: { label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      className={`rounded px-2 py-1 text-xs ${
+        props.on ? 'bg-gray-900 text-white' : 'border text-gray-600 hover:bg-gray-50'
+      }`}
+      onClick={props.onClick}
+      type="button"
+    >
+      {props.label}
+    </button>
+  );
+}
+
+// 네이버 블로그 URL 에서 blogId 추출(2-1). blog.naver.com/{id}, ?blogId=, m.blog, {id}.blog.me.
+function parseBlogId(url: string): string {
+  try {
+    const u = new URL(url);
+    const q = u.searchParams.get('blogId');
+    if (q) return q;
+    if (/(^|\.)blog\.naver\.com$/.test(u.hostname)) {
+      const seg = u.pathname.split('/').filter(Boolean);
+      if (seg[0] && !seg[0].endsWith('.naver')) return seg[0];
+    }
+    const me = u.hostname.match(/^([^.]+)\.blog\.me$/);
+    if (me?.[1]) return me[1];
+  } catch {
+    /* 잘못된 URL */
+  }
+  return '';
 }
 
 // 부가요소 한 줄: 체크박스 + 켜졌을 때만 입력칸 노출.
