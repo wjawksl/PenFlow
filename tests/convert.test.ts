@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { htmlToMarkdown, markdownToHtml, sanitizeHtml } from '@/components/validator/convert';
+import {
+  htmlToMarkdown,
+  markdownToHtml,
+  replaceInBody,
+  sanitizeHtml,
+} from '@/components/validator/convert';
 import { make, scan } from '@/lib/markers';
 
 describe('convert (⑩ WP1)', () => {
@@ -58,5 +63,36 @@ describe('sanitizeHtml (⑩ WP1 1-2 — 삽입 직전 정제)', () => {
     const clean = sanitizeHtml(html);
     expect(scan(clean).map((m) => m.type)).toEqual(['SHOP']);
     expect(clean).not.toContain('<script');
+  });
+});
+
+describe('replaceInBody (⑩ WP3 — 찾기·바꾸기)', () => {
+  it('일괄 치환하고 치환 개수를 센다 (3-1)', () => {
+    const r = replaceInBody('<p>아이폰 좋다. 아이폰 최고. 아이폰!</p>', '아이폰', 'iPhone');
+    expect(r.count).toBe(3);
+    expect(r.html).toBe('<p>iPhone 좋다. iPhone 최고. iPhone!</p>');
+  });
+
+  it('일치 없으면 count 0, 본문 불변', () => {
+    const html = '<p>본문</p>';
+    const r = replaceInBody(html, '없는말', 'x');
+    expect(r.count).toBe(0);
+    expect(r.html).toBe(html);
+  });
+
+  it('빈 find 는 아무것도 하지 않는다', () => {
+    const html = '<p>본문</p>';
+    const r = replaceInBody(html, '', 'x');
+    expect(r.count).toBe(0);
+    expect(r.html).toBe(html);
+  });
+
+  it('마커는 치환에 휩쓸리지 않는다 (3-2, R-8.3)', () => {
+    const html = `<p>SHOP 안내</p>${make('SHOP', '1')}<p>SHOP 끝</p>`;
+    const r = replaceInBody(html, 'SHOP', '쇼핑');
+    expect(r.count).toBe(2); // 본문 텍스트 2건만, 마커 내부 SHOP 은 제외
+    expect(scan(r.html).map((m) => m.type)).toEqual(['SHOP']); // 마커 보존
+    expect(r.html).toContain('쇼핑 안내');
+    expect(r.html).toContain('쇼핑 끝');
   });
 });

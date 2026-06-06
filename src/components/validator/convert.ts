@@ -51,6 +51,24 @@ export function htmlToMarkdown(html: string): string {
   return restore(md, map);
 }
 
+/**
+ * 찾기·바꾸기(M3 WP3, 02 §9.2). 본문 HTML 에서 find 를 replace 로 일괄 치환하고 치환 개수를 센다.
+ * 마커는 protect/restore 로 감싸 치환 대상에서 제외 → 마커 보존(R-8.3). 순수 문자열(SW 가능).
+ * 리터럴 치환이라 짧은 문자열은 태그 내부와도 매칭될 수 있다 → 단어/문구 단위 사용 권장.
+ */
+export function replaceInBody(
+  html: string,
+  find: string,
+  replace: string,
+): { html: string; count: number } {
+  if (!find) return { html, count: 0 };
+  const { text, map } = protect(html);
+  const parts = text.split(find);
+  const count = parts.length - 1;
+  if (count === 0) return { html, count: 0 };
+  return { html: restore(parts.join(replace), map), count };
+}
+
 // SmartEditor 본문에 paste 허용할 태그/속성. script·style·on* 핸들러 등은 모두 제거(XSS·잡태그).
 // 표·리스트·링크·강조·소제목 등 ⑩ 변환이 만드는 서식만 통과시킨다.
 const SANITIZE_CONFIG = {
