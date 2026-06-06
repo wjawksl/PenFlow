@@ -16,6 +16,7 @@ import type {
 export interface Msg<T = unknown> {
   kind: 'cmd' | 'event';
   name: ChannelName;
+  target?: 'background' | 'offscreen'; // 생략 시 background. BG→Offscreen 위임 구분(05 §2 WP0)
   requestId?: string; // cmd 응답 매칭
   payload: T;
 }

@@ -14,7 +14,8 @@ export default defineConfig({
   manifest: {
     name: '펜플로우',
     // M1 범위: Side Panel(UI) + Background(두뇌) + Editor CS(삽입) — 05 §9.
-    permissions: ['storage', 'sidePanel', 'scripting', 'tabs'],
+    // offscreen: ⑨ Canvas 합성·⑩ DOM 변환을 화면 없는 문서에서 처리(05 §2, M3 WP0).
+    permissions: ['storage', 'sidePanel', 'scripting', 'tabs', 'offscreen'],
     // ② 주제 소스 — background fetch 로 CORS 회피(M2).
     // 검색광고(A)·블로그(B)·자동완성(C: 네이버/구글·유튜브).
     host_permissions: [

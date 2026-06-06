@@ -9,7 +9,10 @@ import { collectTopics } from '@/components/topic';
 import { wireProgressBroadcast } from '@/lib/bus';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
+import { callOffscreen } from '@/lib/offscreen';
 import type {
+  ConvertReq,
+  ConvertRes,
   DensityAnalyzeReq,
   DensityAnalyzeRes,
   GenerateReq,
@@ -30,6 +33,7 @@ export default defineBackground(() => {
 
   chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
     if (msg.kind !== 'cmd') return false;
+    if (msg.target === 'offscreen') return false; // 오프스크린 위임 메시지는 BG가 처리 안 함
 
     if (msg.name === 'topic.collect') {
       handleTopicCollect(msg.payload as TopicCollectReq).then(sendResponse);
@@ -41,6 +45,13 @@ export default defineBackground(() => {
     }
     if (msg.name === 'density.analyze') {
       handleDensity(msg.payload as DensityAnalyzeReq).then(sendResponse);
+      return true;
+    }
+    if (msg.name === 'convert.htmlmd') {
+      // ⑩ 변환은 DOM 필요 → 오프스크린에 위임(05 §2 WP0).
+      callOffscreen<ConvertReq, ConvertRes>('convert.htmlmd', msg.payload as ConvertReq).then(
+        sendResponse,
+      );
       return true;
     }
     if (msg.name === 'insert.start') {
