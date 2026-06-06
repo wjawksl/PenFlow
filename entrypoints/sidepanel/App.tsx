@@ -76,7 +76,7 @@ export function App() {
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
   const [densKeywords, setDensKeywords] = useState(''); // ⑩ 밀도(WP2) 추가 키워드(쉼표 구분)
   const [densMin, setDensMin] = useState(1); // 권장 밀도 하한(%)
-  const [densMax, setDensMax] = useState(3); // 권장 밀도 상한(%)
+  const [densMax, setDensMax] = useState(5); // 권장 밀도 상한(%)
   const [rangeOpen, setRangeOpen] = useState(false); // 권장범위 조정 펼침(평소 접힘, R-8.2)
   const [densReport, setDensReport] = useState<DensityReport | null>(null);
   const [densMsg, setDensMsg] = useState('');
@@ -109,6 +109,12 @@ export function App() {
       }),
     [],
   );
+
+  // 삽입 완료 후 자동 밀도 검사 — 에디터에 글이 올라간 뒤 검토(미리보기 없이 에디터=실제 화면).
+  useEffect(() => {
+    if (phase === 'done') onAnalyzeDensity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // 키워드 검색: 검색량·경쟁도(A)와 연관 검색어(C)를 한 번에 수집해 같은 화면에 노출.
   async function onKeywordSearch() {
@@ -208,7 +214,8 @@ export function App() {
     payloadId.current = res.value.payloadId;
     setPhase('generated');
     setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
-    onAnalyzeDensity(); // 생성 직후 자동 밀도 검사(버튼 불필요 — 바로 결과 노출)
+    setDensReport(null); // 새 본문 → 이전 밀도 결과 초기화(밀도 검사는 삽입 후)
+    setDensMsg('');
   }
 
   // ⑩ 키워드 밀도 검증(WP2): 메인 키워드 + 추가 키워드를 background 에서 집계.
@@ -257,7 +264,7 @@ export function App() {
   const busy = phase === 'generating' || phase === 'inserting';
 
   return (
-    <div className="flex min-h-screen flex-col bg-white text-sm text-gray-900">
+    <div className="flex h-screen flex-col bg-white text-sm text-gray-900">
       <header className="flex items-center justify-between border-b px-4 py-3">
         <span className="font-bold">펜플로우</span>
         <button
@@ -400,6 +407,96 @@ export function App() {
           />
         </div>
 
+        {/* ⑩ 키워드 밀도(WP2) — 항상 표시(최소 크기→데이터 시 확장). 검사는 에디터 삽입 후(done)에만. R-8.2 */}
+        <fieldset className="space-y-2 rounded border p-2">
+          <legend className="px-1 text-xs text-gray-500">키워드 밀도</legend>
+          <div className="flex gap-2">
+            <input
+              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+              placeholder="추가 키워드 (쉼표 구분, 메인은 자동 포함)"
+              value={densKeywords}
+              onChange={(e) => setDensKeywords(e.target.value)}
+            />
+            <button
+              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+              onClick={onAnalyzeDensity}
+              disabled={busy || phase !== 'done'}
+              type="button"
+              title={phase === 'done' ? '키워드 출현 횟수·밀도 다시 검사' : '에디터에 삽입한 뒤 검사할 수 있어요'}
+            >
+              밀도 검사
+            </button>
+          </div>
+
+          {/* 권장범위(R-8.2): 평소 접힘 — 대부분 기본값이면 충분. 누르면 펼쳐 조정. */}
+          {rangeOpen ? (
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span>권장</span>
+              <input
+                className="w-14 rounded border px-1 py-1 text-right"
+                type="number"
+                min={0}
+                step={0.1}
+                value={densMin}
+                onChange={(e) => setDensMin(Number(e.target.value) || 0)}
+              />
+              <span>~</span>
+              <input
+                className="w-14 rounded border px-1 py-1 text-right"
+                type="number"
+                min={0}
+                step={0.1}
+                value={densMax}
+                onChange={(e) => setDensMax(Number(e.target.value) || 0)}
+              />
+              <span>%</span>
+              <button
+                className="ml-auto text-[11px] text-gray-400 hover:text-gray-600"
+                onClick={() => setRangeOpen(false)}
+                type="button"
+              >
+                접기
+              </button>
+            </div>
+          ) : (
+            <button
+              className="text-[11px] text-gray-400 hover:text-gray-600"
+              onClick={() => setRangeOpen(true)}
+              type="button"
+            >
+              권장 {densMin}~{densMax}% · 조정
+            </button>
+          )}
+          {phase !== 'done' && !densReport && (
+            <p className="text-[11px] text-gray-400">에디터에 삽입한 뒤 검사할 수 있어요.</p>
+          )}
+          {densMsg && <p className="text-xs text-gray-500">{densMsg}</p>}
+          {densReport && densReport.items.length > 0 && (
+            <table className="w-full text-xs">
+              <thead className="text-gray-500">
+                <tr>
+                  <th className="px-1 py-1 text-left font-normal">키워드</th>
+                  <th className="px-1 py-1 text-right font-normal">횟수</th>
+                  <th className="px-1 py-1 text-right font-normal">밀도</th>
+                  <th className="px-1 py-1 text-center font-normal">판정</th>
+                </tr>
+              </thead>
+              <tbody>
+                {densReport.items.map((it) => (
+                  <tr key={it.keyword} className="border-t">
+                    <td className="px-1 py-1">{it.keyword}</td>
+                    <td className="px-1 py-1 text-right">{it.count}</td>
+                    <td className="px-1 py-1 text-right">{it.density.toFixed(1)}%</td>
+                    <td className={`px-1 py-1 text-center ${VERDICT[it.verdict].cls}`}>
+                      {VERDICT[it.verdict].label}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </fieldset>
+
         {/* 부가요소 (선택) — 09 S3. 켜진 항목만 마커 emit + 합성 */}
         <fieldset className="space-y-2 rounded border p-3">
           <legend className="px-1 text-xs text-gray-500">부가요소 (선택)</legend>
@@ -466,6 +563,10 @@ export function App() {
           </label>
         </fieldset>
 
+      </main>
+
+      {/* 하단 고정 액션 바 — 스크롤과 무관하게 생성·삽입 버튼 항상 노출 */}
+      <div className="space-y-2 border-t bg-white p-3">
         <button
           className="w-full rounded bg-gray-900 py-2 text-white disabled:opacity-50"
           onClick={onGenerate}
@@ -474,107 +575,17 @@ export function App() {
         >
           {phase === 'generating' ? '생성 중…' : '✍ API 글 생성'}
         </button>
-
         {(phase === 'generated' || phase === 'inserting' || phase === 'done') && (
-          <>
-            {/* ⑩ 키워드 밀도(WP2) — 형태소 대신 정규화 카운트. 권장범위 벗어나면 경고(R-8.2). */}
-            <fieldset className="space-y-2 rounded border p-2">
-              <legend className="px-1 text-xs text-gray-500">키워드 밀도</legend>
-              <div className="flex gap-2">
-                <input
-                  className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
-                  placeholder="추가 키워드 (쉼표 구분, 메인은 자동 포함)"
-                  value={densKeywords}
-                  onChange={(e) => setDensKeywords(e.target.value)}
-                />
-                <button
-                  className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
-                  onClick={onAnalyzeDensity}
-                  disabled={busy}
-                  type="button"
-                  title="키워드 출현 횟수·밀도 다시 검사"
-                >
-                  밀도 검사
-                </button>
-              </div>
-
-              {/* 권장범위(R-8.2): 평소 접힘 — 대부분 기본값이면 충분. 누르면 펼쳐 조정. */}
-              {rangeOpen ? (
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span>권장</span>
-                  <input
-                    className="w-14 rounded border px-1 py-1 text-right"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={densMin}
-                    onChange={(e) => setDensMin(Number(e.target.value) || 0)}
-                  />
-                  <span>~</span>
-                  <input
-                    className="w-14 rounded border px-1 py-1 text-right"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={densMax}
-                    onChange={(e) => setDensMax(Number(e.target.value) || 0)}
-                  />
-                  <span>%</span>
-                  <button
-                    className="ml-auto text-[11px] text-gray-400 hover:text-gray-600"
-                    onClick={() => setRangeOpen(false)}
-                    type="button"
-                  >
-                    접기
-                  </button>
-                </div>
-              ) : (
-                <button
-                  className="text-[11px] text-gray-400 hover:text-gray-600"
-                  onClick={() => setRangeOpen(true)}
-                  type="button"
-                >
-                  권장 {densMin}~{densMax}% · 조정
-                </button>
-              )}
-              {densMsg && <p className="text-xs text-gray-500">{densMsg}</p>}
-              {densReport && densReport.items.length > 0 && (
-                <table className="w-full text-xs">
-                  <thead className="text-gray-500">
-                    <tr>
-                      <th className="px-1 py-1 text-left font-normal">키워드</th>
-                      <th className="px-1 py-1 text-right font-normal">횟수</th>
-                      <th className="px-1 py-1 text-right font-normal">밀도</th>
-                      <th className="px-1 py-1 text-center font-normal">판정</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {densReport.items.map((it) => (
-                      <tr key={it.keyword} className="border-t">
-                        <td className="px-1 py-1">{it.keyword}</td>
-                        <td className="px-1 py-1 text-right">{it.count}</td>
-                        <td className="px-1 py-1 text-right">{it.density.toFixed(1)}%</td>
-                        <td className={`px-1 py-1 text-center ${VERDICT[it.verdict].cls}`}>
-                          {VERDICT[it.verdict].label}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </fieldset>
-
-            <button
-              className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
-              onClick={onInsert}
-              disabled={busy}
-              type="button"
-            >
-              {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
-            </button>
-          </>
+          <button
+            className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
+            onClick={onInsert}
+            disabled={busy}
+            type="button"
+          >
+            {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
+          </button>
         )}
-      </main>
+      </div>
 
       <footer className="border-t px-4 py-2 text-xs">
         <span
@@ -675,7 +686,7 @@ function ResultTable(props: {
 }) {
   const { title, subtitle, kind, topics, msg, onPick } = props;
   const [sort, setSort] = useState<{ id: string; dir: 1 | -1 }[]>([]);
-  if (!topics.length && !msg) return null; // 검색 전엔 숨김
+  // 항상 최소 크기로 표시(검색 전엔 헤더만), 데이터 생기면 표로 확장.
 
   const cols = colsFor(kind);
   // 다중 정렬: sort 배열 순서대로 첫 비교에서 갈리면 결정.
@@ -720,6 +731,9 @@ function ResultTable(props: {
         </span>
       </div>
       {msg && <p className="px-2 py-1 text-xs text-gray-500">{msg}</p>}
+      {topics.length === 0 && !msg && (
+        <p className="px-2 py-1 text-xs text-gray-300">검색 전</p>
+      )}
       {topics.length > 0 && (
         <div className="max-h-44 overflow-y-auto">
           <table className="w-full text-xs">

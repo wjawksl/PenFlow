@@ -7,7 +7,7 @@ export const DEFAULT_SETTINGS: Settings = {
   aiTextCredentials: [],
   aiModel: 'gemini-2.5-flash',
   format: { lineHeight: '1.8', fontFamily: 'nanumgothic', fontSize: '15px' },
-  densityRange: { min: 1, max: 3 }, // ⑩ 권장 밀도 기본 1~3%(R-8.2, 변경 가능)
+  densityRange: { min: 1, max: 5 }, // ⑩ 권장 밀도 기본 1~5%(R-8.2, 변경 가능)
 };
 
 export async function loadSettings(): Promise<Settings> {
