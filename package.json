@@ -13,7 +13,9 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@types/dompurify": "^3.0.5",
     "@wxt-dev/module-react": "^1.2.2",
+    "dompurify": "^3.4.8",
     "marked": "^18.0.5",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

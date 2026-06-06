@@ -63,6 +63,7 @@ export function App() {
   const [msgMap, setMsgMap] = useState<Record<'A' | 'B' | 'C', string>>({ A: '', B: '', C: '' });
   const [analyzing, setAnalyzing] = useState(false);
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
+  const [copied, setCopied] = useState(false); // 미리보기 클립보드 복사 피드백(WP1 1-4)
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -82,6 +83,18 @@ export function App() {
       }),
     [],
   );
+
+  // 미리보기 클립보드 복사(WP1 1-4) — 마커는 strip 으로 숨긴 본문만 복사.
+  async function onCopyPreview() {
+    if (!preview) return;
+    try {
+      await navigator.clipboard.writeText(strip(preview));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setProgress('클립보드 복사에 실패했어요.');
+    }
+  }
 
   // 키워드 검색: 검색량·경쟁도(A)와 연관 검색어(C)를 한 번에 수집해 같은 화면에 노출.
   async function onKeywordSearch() {
@@ -431,8 +444,18 @@ export function App() {
         )}
 
         {preview && (
-          <div className="rounded border bg-gray-50 p-2 text-xs whitespace-pre-wrap">
-            {strip(preview)}
+          <div className="rounded border bg-gray-50 p-2 text-xs">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="font-medium text-gray-500">미리보기</span>
+              <button
+                className="rounded border px-2 py-0.5 text-gray-600 hover:bg-gray-100"
+                onClick={onCopyPreview}
+                type="button"
+              >
+                {copied ? '복사됨 ✓' : '📋 복사'}
+              </button>
+            </div>
+            <div className="whitespace-pre-wrap">{strip(preview)}</div>
           </div>
         )}
       </main>

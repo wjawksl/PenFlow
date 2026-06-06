@@ -4,6 +4,7 @@
 // marked 는 순수 JS(SW 가능). turndown 은 DOM 필요 → 호출 시 지연 생성(SW 에선 미사용).
 import { marked } from 'marked';
 import TurndownService from 'turndown';
+import DOMPurify from 'dompurify';
 import { MARKER_RE } from '@/lib/markers';
 
 const PH = (i: number) => `PFMK${i}MKPF`; // 영숫자만 — 마크다운/HTML 특수문자 없음
@@ -48,4 +49,28 @@ export function htmlToMarkdown(html: string): string {
   const { text, map } = protect(html);
   const md = getTurndown().turndown(text);
   return restore(md, map);
+}
+
+// SmartEditor 본문에 paste 허용할 태그/속성. script·style·on* 핸들러 등은 모두 제거(XSS·잡태그).
+// 표·리스트·링크·강조·소제목 등 ⑩ 변환이 만드는 서식만 통과시킨다.
+const SANITIZE_CONFIG = {
+  ALLOWED_TAGS: [
+    'h1', 'h2', 'h3', 'h4', 'p', 'br', 'hr', 'blockquote',
+    'strong', 'b', 'em', 'i', 'u', 's', 'del', 'mark', 'code', 'pre',
+    'ul', 'ol', 'li',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'a', 'span', 'div', 'button',
+  ],
+  ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan'],
+};
+
+/**
+ * 삽입 직전 정제(M3 WP1 1-2). AI 생성 HTML 의 script·이벤트 핸들러·잡태그 제거(XSS 방어).
+ * DOM 필요 → content script/UI/Offscreen 에서만 호출(서비스워커 불가).
+ * 마커는 텍스트라 정제로 사라지지 않지만, 안전하게 protect/restore 로 보존한다(R-8.3).
+ */
+export function sanitizeHtml(html: string): string {
+  const { text, map } = protect(html);
+  const clean = DOMPurify.sanitize(text, SANITIZE_CONFIG) as unknown as string;
+  return restore(clean, map);
 }

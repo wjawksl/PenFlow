@@ -2,6 +2,7 @@
 // M1 큐는 텍스트/HTML 단일 블록(이미지·표·링크 제외). 07 §2 Happy Path 축약.
 // 스파이크 실측: 본문은 iframe[name=mainFrame] 안 → dom.ts 가 editor 문서를 자동 타깃.
 import { extractTitle } from '@/components/generator';
+import { sanitizeHtml } from '@/components/validator/convert';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { EDITOR_DEFAULTS, SEL } from '@/lib/selectors';
@@ -12,7 +13,7 @@ import { insertTitle, pasteHtml, resolveEl, sleep, waitForEl } from './dom';
 const P = EDITOR_DEFAULTS;
 
 // InsertTask → 삽입할 HTML 조각. 스파이크 실측: 표·링크 모두 HTML paste 로 SE 컴포넌트화됨.
-function taskToHtml(task: InsertTask): string {
+export function taskToHtml(task: InsertTask): string {
   switch (task.type) {
     case 'text':
     case 'productTable': // 합성기가 html table 을 content 로 전달
@@ -71,7 +72,7 @@ export async function runInsert(
     : [{ type: 'text' as const, content: payload.contentHtml }];
   for (let i = 0; i < queue.length; i++) {
     const task = queue[i]!;
-    const html = taskToHtml(task);
+    const html = sanitizeHtml(taskToHtml(task)); // M3 WP1 1-2: 삽입 직전 XSS·잡태그 정제
     if (!html) continue; // 이미지 등 M2 미지원 작업은 스킵
     try {
       body.focus();

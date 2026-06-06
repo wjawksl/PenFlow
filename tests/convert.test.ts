@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { htmlToMarkdown, markdownToHtml } from '@/components/validator/convert';
+import { htmlToMarkdown, markdownToHtml, sanitizeHtml } from '@/components/validator/convert';
 import { make, scan } from '@/lib/markers';
 
 describe('convert (⑩ WP1)', () => {
@@ -24,5 +24,39 @@ describe('convert (⑩ WP1)', () => {
     const html = markdownToHtml(`${make('AD')}\n\n## 소제목\n\n본문`);
     expect(html).not.toContain(`<p>${make('AD')}</p>`);
     expect(html).toContain(make('AD'));
+  });
+});
+
+describe('sanitizeHtml (⑩ WP1 1-2 — 삽입 직전 정제)', () => {
+  it('script·이벤트 핸들러를 제거한다 (XSS 방어)', () => {
+    const dirty = '<p onclick="alert(1)">본문</p><script>alert(2)</script>';
+    const clean = sanitizeHtml(dirty);
+    expect(clean).not.toContain('<script');
+    expect(clean).not.toContain('onclick');
+    expect(clean).toContain('본문');
+  });
+
+  it('표·리스트·링크·강조 등 본문 서식은 통과시킨다', () => {
+    const html =
+      '<h2>제목</h2><table><tr><td>A</td></tr></table><ul><li>x</li></ul><strong>굵게</strong><a href="https://x.test">링크</a>';
+    const clean = sanitizeHtml(html);
+    expect(clean).toContain('<h2>제목</h2>');
+    expect(clean).toContain('<table>');
+    expect(clean).toContain('<li>x</li>');
+    expect(clean).toContain('<strong>굵게</strong>');
+    expect(clean).toContain('href="https://x.test"');
+  });
+
+  it('javascript: 링크는 href 가 제거된다', () => {
+    const clean = sanitizeHtml('<a href="javascript:alert(1)">위험</a>');
+    expect(clean).not.toContain('javascript:');
+    expect(clean).toContain('위험');
+  });
+
+  it('마커는 정제 후에도 보존된다 (R-8.3)', () => {
+    const html = `<p>앞</p>${make('SHOP', '1')}<script>bad()</script><p>뒤</p>`;
+    const clean = sanitizeHtml(html);
+    expect(scan(clean).map((m) => m.type)).toEqual(['SHOP']);
+    expect(clean).not.toContain('<script');
   });
 });
