@@ -1,7 +1,6 @@
 // Side Panel 메인 UI — 09 S0. M1: 단일 플로우(주제→생성→삽입→임시저장).
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { strip } from '@/lib/markers';
 import type { GenerateReq, TopicCollectReq, TopicCollectRes } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
@@ -53,7 +52,6 @@ export function App() {
   const [extras, setExtras] = useState<Extras>(EXTRAS_INIT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
-  const [preview, setPreview] = useState('');
   const [topicTab, setTopicTab] = useState<'kw' | 'blog'>('kw'); // 키워드(검색량+연관) / 블로그 제목
   const [blogId, setBlogId] = useState(''); // 블로그 제목: 대상 블로그
   const [postCount, setPostCount] = useState(30); // 블로그 제목: 수집 개수
@@ -63,7 +61,6 @@ export function App() {
   const [msgMap, setMsgMap] = useState<Record<'A' | 'B' | 'C', string>>({ A: '', B: '', C: '' });
   const [analyzing, setAnalyzing] = useState(false);
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
-  const [copied, setCopied] = useState(false); // 미리보기 클립보드 복사 피드백(WP1 1-4)
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -83,18 +80,6 @@ export function App() {
       }),
     [],
   );
-
-  // 미리보기 클립보드 복사(WP1 1-4) — 마커는 strip 으로 숨긴 본문만 복사.
-  async function onCopyPreview() {
-    if (!preview) return;
-    try {
-      await navigator.clipboard.writeText(strip(preview));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setProgress('클립보드 복사에 실패했어요.');
-    }
-  }
 
   // 키워드 검색: 검색량·경쟁도(A)와 연관 검색어(C)를 한 번에 수집해 같은 화면에 노출.
   async function onKeywordSearch() {
@@ -194,7 +179,6 @@ export function App() {
     payloadId.current = res.value.payloadId;
     setPhase('generated');
     setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
-    setPreview('');
   }
 
   async function onInsert() {
@@ -441,22 +425,6 @@ export function App() {
           >
             {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
           </button>
-        )}
-
-        {preview && (
-          <div className="rounded border bg-gray-50 p-2 text-xs">
-            <div className="mb-1 flex items-center justify-between">
-              <span className="font-medium text-gray-500">미리보기</span>
-              <button
-                className="rounded border px-2 py-0.5 text-gray-600 hover:bg-gray-100"
-                onClick={onCopyPreview}
-                type="button"
-              >
-                {copied ? '복사됨 ✓' : '📋 복사'}
-              </button>
-            </div>
-            <div className="whitespace-pre-wrap">{strip(preview)}</div>
-          </div>
         )}
       </main>
 
