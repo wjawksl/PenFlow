@@ -5,3 +5,4 @@ stats.html
 *.zip
 .DS_Store
 .idea
+.kiwi-tmp/

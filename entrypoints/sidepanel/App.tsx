@@ -1,19 +1,28 @@
 // Side Panel 메인 UI — 09 S0. M1: 단일 플로우(주제→생성→삽입→임시저장).
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { loadSettings, setDensityRange } from '@/components/settings';
 import type {
+  DensityAnalyzeReq,
+  DensityAnalyzeRes,
   GenerateReq,
   TopicCollectReq,
   TopicCollectRes,
 } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
-import type { PayloadOptions, Topic } from '@/types/models';
+import type { DensityReport, PayloadOptions, Topic } from '@/types/models';
 
 // 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
 const COMP_LABEL: Record<number, string> = { 1: '낮음', 2: '중간', 3: '높음' };
 // 출처 코드 → 표시 라벨(연관 검색어 플랫폼 배지).
 const SRC_LABEL: Record<string, string> = { naver: '네이버', google: '구글', youtube: '유튜브' };
+// ⑩ 밀도 판정 → 라벨·색(권장범위 기준, R-8.2).
+const VERDICT: Record<'ok' | 'high' | 'low', { label: string; cls: string }> = {
+  ok: { label: '✅ 적정', cls: 'text-green-600' },
+  high: { label: '⚠ 과다', cls: 'text-red-600' },
+  low: { label: '△ 부족', cls: 'text-amber-600' },
+};
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
 
@@ -65,10 +74,26 @@ export function App() {
   const [msgMap, setMsgMap] = useState<Record<'A' | 'B' | 'C', string>>({ A: '', B: '', C: '' });
   const [analyzing, setAnalyzing] = useState(false);
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
+  const [densKeywords, setDensKeywords] = useState(''); // ⑩ 밀도(WP2) 추가 키워드(쉼표 구분)
+  const [densMin, setDensMin] = useState(1); // 권장 밀도 하한(%)
+  const [densMax, setDensMax] = useState(3); // 권장 밀도 상한(%)
+  const [rangeOpen, setRangeOpen] = useState(false); // 권장범위 조정 펼침(평소 접힘, R-8.2)
+  const [densReport, setDensReport] = useState<DensityReport | null>(null);
+  const [densMsg, setDensMsg] = useState('');
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
   const setMsgFor = (p: 'A' | 'B' | 'C', msg: string) => setMsgMap((m) => ({ ...m, [p]: msg }));
+
+  // 저장된 권장 밀도 범위 불러오기(R-8.2).
+  useEffect(() => {
+    loadSettings().then((s) => {
+      if (s.densityRange) {
+        setDensMin(s.densityRange.min);
+        setDensMax(s.densityRange.max);
+      }
+    });
+  }, []);
 
   useEffect(
     () =>
@@ -183,6 +208,36 @@ export function App() {
     payloadId.current = res.value.payloadId;
     setPhase('generated');
     setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
+    onAnalyzeDensity(); // 생성 직후 자동 밀도 검사(버튼 불필요 — 바로 결과 노출)
+  }
+
+  // ⑩ 키워드 밀도 검증(WP2): 메인 키워드 + 추가 키워드를 background 에서 집계.
+  async function onAnalyzeDensity() {
+    if (!payloadId.current) return;
+    const extra = densKeywords
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean);
+    const keywords = [keyword.trim(), ...extra].filter(Boolean);
+    if (!keywords.length) {
+      setDensMsg('검사할 키워드가 없어요.');
+      return;
+    }
+    const min = Math.max(0, densMin);
+    const max = Math.max(min, densMax);
+    setDensMsg('분석 중…');
+    const res = await sendCmd<DensityAnalyzeReq, DensityAnalyzeRes>('density.analyze', {
+      payloadId: payloadId.current,
+      keywords,
+      range: { min, max },
+    });
+    if (!res.ok) {
+      setDensMsg(res.error.message);
+      return;
+    }
+    setDensReport(res.value);
+    setDensMsg('');
+    setDensityRange(min, max); // 권장범위 저장(다음 세션 유지, R-8.2)
   }
 
   async function onInsert() {
@@ -421,14 +476,103 @@ export function App() {
         </button>
 
         {(phase === 'generated' || phase === 'inserting' || phase === 'done') && (
-          <button
-            className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
-            onClick={onInsert}
-            disabled={busy}
-            type="button"
-          >
-            {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
-          </button>
+          <>
+            {/* ⑩ 키워드 밀도(WP2) — 형태소 대신 정규화 카운트. 권장범위 벗어나면 경고(R-8.2). */}
+            <fieldset className="space-y-2 rounded border p-2">
+              <legend className="px-1 text-xs text-gray-500">키워드 밀도</legend>
+              <div className="flex gap-2">
+                <input
+                  className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+                  placeholder="추가 키워드 (쉼표 구분, 메인은 자동 포함)"
+                  value={densKeywords}
+                  onChange={(e) => setDensKeywords(e.target.value)}
+                />
+                <button
+                  className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+                  onClick={onAnalyzeDensity}
+                  disabled={busy}
+                  type="button"
+                  title="키워드 출현 횟수·밀도 다시 검사"
+                >
+                  밀도 검사
+                </button>
+              </div>
+
+              {/* 권장범위(R-8.2): 평소 접힘 — 대부분 기본값이면 충분. 누르면 펼쳐 조정. */}
+              {rangeOpen ? (
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>권장</span>
+                  <input
+                    className="w-14 rounded border px-1 py-1 text-right"
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={densMin}
+                    onChange={(e) => setDensMin(Number(e.target.value) || 0)}
+                  />
+                  <span>~</span>
+                  <input
+                    className="w-14 rounded border px-1 py-1 text-right"
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={densMax}
+                    onChange={(e) => setDensMax(Number(e.target.value) || 0)}
+                  />
+                  <span>%</span>
+                  <button
+                    className="ml-auto text-[11px] text-gray-400 hover:text-gray-600"
+                    onClick={() => setRangeOpen(false)}
+                    type="button"
+                  >
+                    접기
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="text-[11px] text-gray-400 hover:text-gray-600"
+                  onClick={() => setRangeOpen(true)}
+                  type="button"
+                >
+                  권장 {densMin}~{densMax}% · 조정
+                </button>
+              )}
+              {densMsg && <p className="text-xs text-gray-500">{densMsg}</p>}
+              {densReport && densReport.items.length > 0 && (
+                <table className="w-full text-xs">
+                  <thead className="text-gray-500">
+                    <tr>
+                      <th className="px-1 py-1 text-left font-normal">키워드</th>
+                      <th className="px-1 py-1 text-right font-normal">횟수</th>
+                      <th className="px-1 py-1 text-right font-normal">밀도</th>
+                      <th className="px-1 py-1 text-center font-normal">판정</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {densReport.items.map((it) => (
+                      <tr key={it.keyword} className="border-t">
+                        <td className="px-1 py-1">{it.keyword}</td>
+                        <td className="px-1 py-1 text-right">{it.count}</td>
+                        <td className="px-1 py-1 text-right">{it.density.toFixed(1)}%</td>
+                        <td className={`px-1 py-1 text-center ${VERDICT[it.verdict].cls}`}>
+                          {VERDICT[it.verdict].label}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </fieldset>
+
+            <button
+              className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
+              onClick={onInsert}
+              disabled={busy}
+              type="button"
+            >
+              {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
+            </button>
+          </>
         )}
       </main>
 

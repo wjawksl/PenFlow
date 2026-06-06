@@ -2,13 +2,16 @@
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
 import { compose } from '@/components/composer';
 import { generateBody } from '@/components/generator';
-import { buildPayload, savePayload } from '@/components/payload';
+import { buildPayload, getPayload, savePayload } from '@/components/payload';
+import { analyzeDensity } from '@/components/validator/density';
 import { getActiveCredential, loadSettings } from '@/components/settings';
 import { collectTopics } from '@/components/topic';
 import { wireProgressBroadcast } from '@/lib/bus';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import type {
+  DensityAnalyzeReq,
+  DensityAnalyzeRes,
   GenerateReq,
   InsertStartReq,
   Msg,
@@ -35,6 +38,10 @@ export default defineBackground(() => {
     if (msg.name === 'generate.run') {
       handleGenerate(msg.payload as GenerateReq).then(sendResponse);
       return true; // 비동기 응답
+    }
+    if (msg.name === 'density.analyze') {
+      handleDensity(msg.payload as DensityAnalyzeReq).then(sendResponse);
+      return true;
     }
     if (msg.name === 'insert.start') {
       handleInsert(msg.payload as InsertStartReq).then(sendResponse);
@@ -91,6 +98,15 @@ async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: str
   const payload = buildPayload(id, res.value, 'TEMP_SAVE', req.options, composed.value); // 기본 임시저장(R-5.1)
   await savePayload(payload);
   return { ok: true, value: { payloadId: id } };
+}
+
+// ⑩ 키워드 밀도 검증(M3 WP2). 저장 본문에서 키워드 횟수·밀도 집계(경량, DOM 불필요).
+async function handleDensity(req: DensityAnalyzeReq): Promise<Result<DensityAnalyzeRes>> {
+  const payload = await getPayload(req.payloadId);
+  if (!payload) {
+    return failed(appError('PAYLOAD_NOT_FOUND', '대상 본문을 찾지 못했어요. 다시 생성해 주세요.'));
+  }
+  return { ok: true, value: analyzeDensity(payload.contentHtml, req.keywords, req.range) };
 }
 
 // ⑥⑦ 라우팅: 네이버 글쓰기 탭의 content script 로 전달.

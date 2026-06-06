@@ -18,6 +18,7 @@ export interface Settings {
   keywordToolCredential?: Credential;
   affiliateCredential?: Credential;
   format: FormatPrefs; // 삽입 시 일괄 적용(12.2-5)
+  densityRange?: { min: number; max: number }; // ⑩ 권장 밀도 범위(R-8.2, 설정 가능)
 }
 
 export interface FormatPrefs {

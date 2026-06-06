@@ -2,6 +2,7 @@
 // 컨텍스트가 분리돼 있어 16장의 전달물은 곧 메시지 페이로드가 된다.
 import type { AppError } from '@/types/common';
 import type {
+  DensityReport,
   PayloadOptions,
   Prompt,
   PublishOption,
@@ -24,6 +25,7 @@ export type ChannelName =
   | 'generate.run'
   | 'visual.compose'
   | 'convert.htmlmd'
+  | 'density.analyze'
   | 'insert.start'
   | 'publish.do'
   | 'step.done'
@@ -56,6 +58,13 @@ export interface ConvertReq {
 export interface ConvertRes {
   content: string;
 } // ⑩: 마커 보존(R-8.4)
+
+export interface DensityAnalyzeReq {
+  payloadId: string;
+  keywords: string[]; // 메인 키워드 + 사용자 추가 키워드
+  range: { min: number; max: number }; // 권장 밀도 범위(R-8.2)
+} // ⑩ 키워드 밀도 검증(WP2)
+export type DensityAnalyzeRes = DensityReport; // 횟수·밀도·판정 표(02 9.1)
 
 export interface VisualSpec {
   role: VisualRole;
