@@ -24,7 +24,6 @@ export type ChannelName =
   | 'generate.run'
   | 'visual.compose'
   | 'convert.htmlmd'
-  | 'body.replace'
   | 'insert.start'
   | 'publish.do'
   | 'step.done'
@@ -57,15 +56,6 @@ export interface ConvertReq {
 export interface ConvertRes {
   content: string;
 } // ⑩: 마커 보존(R-8.4)
-
-export interface BodyReplaceReq {
-  payloadId: string;
-  find: string;
-  replace: string;
-} // ⑩ 찾기·바꾸기(WP3): 저장된 본문을 치환(R-8.3)
-export interface BodyReplaceRes {
-  count: number;
-} // 치환 개수만 반환(본문은 payload 에 덮어씀, UI 미노출)
 
 export interface VisualSpec {
   role: VisualRole;

@@ -2,8 +2,6 @@
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type {
-  BodyReplaceReq,
-  BodyReplaceRes,
   GenerateReq,
   TopicCollectReq,
   TopicCollectRes,
@@ -67,9 +65,6 @@ export function App() {
   const [msgMap, setMsgMap] = useState<Record<'A' | 'B' | 'C', string>>({ A: '', B: '', C: '' });
   const [analyzing, setAnalyzing] = useState(false);
   const [clockWarn, setClockWarn] = useState(false); // 검색광고 서명 인증 실패 = 시계 오차 의심(R-0.5)
-  const [findText, setFindText] = useState(''); // ⑩ 찾기·바꾸기(WP3)
-  const [replaceText, setReplaceText] = useState('');
-  const [replaceMsg, setReplaceMsg] = useState('');
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -188,23 +183,6 @@ export function App() {
     payloadId.current = res.value.payloadId;
     setPhase('generated');
     setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
-    setReplaceMsg(''); // 새 본문 → 이전 치환 결과 초기화
-  }
-
-  // ⑩ 찾기·바꾸기(WP3): background 에서 저장 본문 치환(본문 미노출, 개수만 표시).
-  async function onReplace() {
-    if (!payloadId.current || !findText.trim()) return;
-    setReplaceMsg('치환 중…');
-    const res = await sendCmd<BodyReplaceReq, BodyReplaceRes>('body.replace', {
-      payloadId: payloadId.current,
-      find: findText,
-      replace: replaceText,
-    });
-    if (!res.ok) {
-      setReplaceMsg(res.error.message);
-      return;
-    }
-    setReplaceMsg(res.value.count > 0 ? `${res.value.count}건 치환됨` : '일치하는 내용이 없어요.');
   }
 
   async function onInsert() {
@@ -443,44 +421,14 @@ export function App() {
         </button>
 
         {(phase === 'generated' || phase === 'inserting' || phase === 'done') && (
-          <>
-            {/* ⑩ 찾기·바꾸기(WP3) — 본문은 안 띄우고 치환만. 결과는 에디터에서 확인. */}
-            <fieldset className="space-y-2 rounded border p-2">
-              <legend className="px-1 text-xs text-gray-500">찾기·바꾸기</legend>
-              <div className="flex gap-1">
-                <input
-                  className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
-                  placeholder="찾을 말"
-                  value={findText}
-                  onChange={(e) => setFindText(e.target.value)}
-                />
-                <input
-                  className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
-                  placeholder="바꿀 말"
-                  value={replaceText}
-                  onChange={(e) => setReplaceText(e.target.value)}
-                />
-                <button
-                  className="rounded border px-2 py-1 text-xs disabled:opacity-50"
-                  onClick={onReplace}
-                  disabled={busy || !findText.trim()}
-                  type="button"
-                >
-                  바꾸기
-                </button>
-              </div>
-              {replaceMsg && <p className="text-xs text-gray-500">{replaceMsg}</p>}
-            </fieldset>
-
-            <button
-              className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
-              onClick={onInsert}
-              disabled={busy}
-              type="button"
-            >
-              {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
-            </button>
-          </>
+          <button
+            className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
+            onClick={onInsert}
+            disabled={busy}
+            type="button"
+          >
+            {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
+          </button>
         )}
       </main>
 

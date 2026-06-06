@@ -2,16 +2,13 @@
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
 import { compose } from '@/components/composer';
 import { generateBody } from '@/components/generator';
-import { buildPayload, getPayload, savePayload } from '@/components/payload';
-import { replaceInBody } from '@/components/validator/convert';
+import { buildPayload, savePayload } from '@/components/payload';
 import { getActiveCredential, loadSettings } from '@/components/settings';
 import { collectTopics } from '@/components/topic';
 import { wireProgressBroadcast } from '@/lib/bus';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import type {
-  BodyReplaceReq,
-  BodyReplaceRes,
   GenerateReq,
   InsertStartReq,
   Msg,
@@ -38,10 +35,6 @@ export default defineBackground(() => {
     if (msg.name === 'generate.run') {
       handleGenerate(msg.payload as GenerateReq).then(sendResponse);
       return true; // 비동기 응답
-    }
-    if (msg.name === 'body.replace') {
-      handleBodyReplace(msg.payload as BodyReplaceReq).then(sendResponse);
-      return true;
     }
     if (msg.name === 'insert.start') {
       handleInsert(msg.payload as InsertStartReq).then(sendResponse);
@@ -98,24 +91,6 @@ async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: str
   const payload = buildPayload(id, res.value, 'TEMP_SAVE', req.options, composed.value); // 기본 임시저장(R-5.1)
   await savePayload(payload);
   return { ok: true, value: { payloadId: id } };
-}
-
-// ⑩ 찾기·바꾸기(M3 WP3). 저장된 본문을 치환→마커 보존→큐 재합성→재저장(R-8.3).
-// UI 엔 치환 개수만 반환(본문 미노출). 결과는 이후 삽입에 반영.
-async function handleBodyReplace(req: BodyReplaceReq): Promise<Result<BodyReplaceRes>> {
-  const payload = await getPayload(req.payloadId);
-  if (!payload) {
-    return failed(appError('PAYLOAD_NOT_FOUND', '대상 본문을 찾지 못했어요. 다시 생성해 주세요.'));
-  }
-  const { html, count } = replaceInBody(payload.contentHtml, req.find, req.replace);
-  if (count === 0) return { ok: true, value: { count: 0 } }; // 변경 없음 → 저장 생략
-
-  // 본문이 바뀌었으니 insertQueue 재합성(마커 위치 동일 → 통과). 정합성 위반 시 차단.
-  const composed = compose(html, payload.options);
-  if (!composed.ok) return composed;
-
-  await savePayload({ ...payload, contentHtml: html, insertQueue: composed.value });
-  return { ok: true, value: { count } };
 }
 
 // ⑥⑦ 라우팅: 네이버 글쓰기 탭의 content script 로 전달.
