@@ -5,9 +5,9 @@ import type { InsertTask } from '@/types/models';
 
 // SE paste 분할(실측 기반) — 연속 텍스트는 한 묶음, heading 은 <p><strong> 강등, 구조 블록만 분리.
 describe('splitForSe', () => {
-  it('연속 텍스트(heading+p)는 한 조각으로 묶고 heading 은 평문 <p> 로 강등한다', () => {
+  it('연속 텍스트(heading+p)는 한 조각으로 묶고 heading 강등 + 문단 사이 빈 줄을 넣는다', () => {
     const html = '<h2>제목</h2><p>문단1</p><p>문단2</p>';
-    expect(splitForSe(html)).toEqual(['<p>제목</p><p>문단1</p><p>문단2</p>']);
+    expect(splitForSe(html)).toEqual(['<p>제목</p><p><br></p><p>문단1</p><p><br></p><p>문단2</p>']);
   });
 
   it('표·리스트 등 구조 블록은 텍스트런과 분리해 독립 조각으로 만든다', () => {
