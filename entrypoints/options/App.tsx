@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import {
   DEFAULT_SETTINGS,
   loadSettings,
+  setAiImageKey,
   setAiKey,
   setKeywordToolCred,
 } from '@/components/settings';
@@ -10,6 +11,8 @@ import {
 export function OptionsApp() {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState(DEFAULT_SETTINGS.aiModel);
+  const [imgApiKey, setImgApiKey] = useState(''); // ⑨ AI 이미지 키(선택)
+  const [imgModel, setImgModel] = useState(DEFAULT_SETTINGS.aiImageModel ?? '');
   const [kwApiKey, setKwApiKey] = useState(''); // 검색광고 액세스 라이선스
   const [kwSecret, setKwSecret] = useState('');
   const [kwCustomerId, setKwCustomerId] = useState('');
@@ -20,6 +23,8 @@ export function OptionsApp() {
     loadSettings().then((s) => {
       setModel(s.aiModel);
       if (s.aiTextCredentials[0]) setApiKey(s.aiTextCredentials[0].fields.apiKey ?? '');
+      setImgModel(s.aiImageModel ?? DEFAULT_SETTINGS.aiImageModel ?? '');
+      if (s.aiImageCredential) setImgApiKey(s.aiImageCredential.fields.apiKey ?? '');
       const kw = s.keywordToolCredential?.fields;
       if (kw) {
         setKwApiKey(kw.apiKey ?? '');
@@ -38,6 +43,7 @@ export function OptionsApp() {
     setSaving(true);
     try {
       await setAiKey(apiKey, model); // 공백 트리밍 저장 (TC-SET-05)
+      await setAiImageKey(imgApiKey, imgModel); // ⑨ AI 이미지(선택, 빈 키면 슬롯 비움)
       await setKeywordToolCred(kwApiKey, kwSecret, kwCustomerId); // ② 검색광고(선택)
       setStatus('✅ 저장했어요.');
     } catch (e) {
@@ -70,6 +76,28 @@ export function OptionsApp() {
           className="mb-4 w-full rounded border px-2 py-1"
           value={model}
           onChange={(e) => setModel(e.target.value)}
+        />
+      </section>
+
+      <section className="mt-4 rounded border p-4">
+        <h2 className="mb-1 font-semibold">AI 이미지 생성 키 (선택)</h2>
+        <p className="mb-3 text-xs text-gray-500">
+          ⑨ 소제목 썸네일을 AI 로 생성할 때 사용. 본문 키와 같은 Gemini 키를 써도 됩니다. 비워두면 AI 이미지 모드가 꺼집니다.
+        </p>
+        <label className="mb-1 block text-xs text-gray-500">API Key</label>
+        <input
+          className="mb-3 w-full rounded border px-2 py-1"
+          type="password"
+          value={imgApiKey}
+          onChange={(e) => setImgApiKey(e.target.value)}
+          placeholder="Gemini API Key (이미지)"
+        />
+        <label className="mb-1 block text-xs text-gray-500">이미지 모델</label>
+        <input
+          className="w-full rounded border px-2 py-1"
+          value={imgModel}
+          onChange={(e) => setImgModel(e.target.value)}
+          placeholder="gemini-2.5-flash-image"
         />
       </section>
 

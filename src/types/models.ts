@@ -14,6 +14,7 @@ export interface Settings {
   aiTextCredentials: Credential[]; // 복수 등록·한도 초과 시 순환(R-0.1, R-0.2)
   aiModel: string;
   aiImageCredential?: Credential;
+  aiImageModel?: string; // ⑨ AI 이미지 생성 모델(없으면 DEFAULT_SETTINGS)
   imageSourceCredential?: Credential;
   keywordToolCredential?: Credential;
   affiliateCredential?: Credential;
@@ -78,7 +79,7 @@ export interface PayloadOptions {
   ctaButton?: string; // html
   backlinkBlock?: string; // html
   adNotice?: { text: string; position: string }; // 광고/협찬(R-3.4)
-  h2Thumbnail?: { bg: string; fg: string; quality?: number }; // ⑨ 소제목 썸네일 자동 생성(R-7.3). 지정 시 ON. quality=압축률(WP5)
+  h2Thumbnail?: { bg: string; fg: string; quality?: number; source?: 'DEFAULT' | 'AI' }; // ⑨ 소제목 썸네일 자동 생성(R-7.3). 지정 시 ON. quality=압축률(WP5), source=생성 방식(A3)
   includeSourceLink: boolean;
 }
 

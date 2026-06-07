@@ -40,6 +40,7 @@ interface Extras {
   backUrl: string;
   sourceOn: boolean;
   thumbOn: boolean; // ⑨ 소제목(H2) 썸네일 자동 생성(R-7.3)
+  thumbSource: 'DEFAULT' | 'AI'; // 생성 방식: 기본 Canvas 카드 / AI 이미지(A3)
   thumbBg: string; // 썸네일 배경색
   thumbQuality: number; // JPEG 압축 품질 0~1(WP5 5-2)
 }
@@ -54,6 +55,7 @@ const EXTRAS_INIT: Extras = {
   backUrl: '',
   sourceOn: false,
   thumbOn: false,
+  thumbSource: 'DEFAULT',
   thumbBg: '#1f2937',
   thumbQuality: 0.85,
 };
@@ -74,7 +76,8 @@ function buildOptions(e: Extras): PayloadOptions {
   if (e.shopOn && e.shopUrl.trim()) o.shoppingLink = { url: e.shopUrl.trim(), positions: [] };
   if (e.ctaOn && e.ctaText.trim()) o.ctaButton = `<a href="#">${e.ctaText.trim()}</a>`;
   if (e.backOn && e.backUrl.trim()) o.backlinkBlock = `<a href="${e.backUrl.trim()}">${e.backUrl.trim()}</a>`;
-  if (e.thumbOn) o.h2Thumbnail = { bg: e.thumbBg, fg: pickFg(e.thumbBg), quality: e.thumbQuality };
+  if (e.thumbOn)
+    o.h2Thumbnail = { bg: e.thumbBg, fg: pickFg(e.thumbBg), quality: e.thumbQuality, source: e.thumbSource };
   return o;
 }
 
@@ -658,32 +661,62 @@ export function App() {
             </label>
             {extras.thumbOn && (
               <div className="space-y-1.5">
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span>배경색</span>
-                  <input
-                    type="color"
-                    className="h-6 w-10 rounded border"
-                    value={extras.thumbBg}
-                    onChange={(e) => setExtras((s) => ({ ...s, thumbBg: e.target.value }))}
-                  />
-                  <span className="text-[11px] text-gray-400">소제목 개수만큼 1:1 생성</span>
+                {/* 생성 방식(A3) — 기본 카드(Canvas) / AI 이미지(Gemini, 설정 키 필요). */}
+                <div className="flex items-center gap-3 text-xs text-gray-500">
+                  <span className="shrink-0">방식</span>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      name="thumbSource"
+                      checked={extras.thumbSource === 'DEFAULT'}
+                      onChange={() => setExtras((s) => ({ ...s, thumbSource: 'DEFAULT' }))}
+                    />
+                    기본 카드
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      name="thumbSource"
+                      checked={extras.thumbSource === 'AI'}
+                      onChange={() => setExtras((s) => ({ ...s, thumbSource: 'AI' }))}
+                    />
+                    AI 이미지
+                  </label>
                 </div>
-                {/* 압축 품질(WP5 5-2) — 낮을수록 용량↓·화질↓. 중복 회피 노이즈는 항상 적용(R-7.4). */}
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span className="shrink-0">압축 품질</span>
-                  <input
-                    type="range"
-                    min={0.3}
-                    max={1}
-                    step={0.05}
-                    value={extras.thumbQuality}
-                    onChange={(e) => setExtras((s) => ({ ...s, thumbQuality: Number(e.target.value) }))}
-                    className="flex-1"
-                  />
-                  <span className="w-8 shrink-0 text-right tabular-nums">
-                    {Math.round(extras.thumbQuality * 100)}%
-                  </span>
-                </div>
+                {extras.thumbSource === 'AI' ? (
+                  <p className="text-[11px] text-gray-400">
+                    설정의 AI 이미지 키로 소제목마다 일러스트를 생성합니다. 키가 없으면 기본 카드로 만듭니다.
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span>배경색</span>
+                      <input
+                        type="color"
+                        className="h-6 w-10 rounded border"
+                        value={extras.thumbBg}
+                        onChange={(e) => setExtras((s) => ({ ...s, thumbBg: e.target.value }))}
+                      />
+                      <span className="text-[11px] text-gray-400">소제목 개수만큼 1:1 생성</span>
+                    </div>
+                    {/* 압축 품질(WP5 5-2) — 낮을수록 용량↓·화질↓. 중복 회피 노이즈는 항상 적용(R-7.4). */}
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span className="shrink-0">압축 품질</span>
+                      <input
+                        type="range"
+                        min={0.3}
+                        max={1}
+                        step={0.05}
+                        value={extras.thumbQuality}
+                        onChange={(e) => setExtras((s) => ({ ...s, thumbQuality: Number(e.target.value) }))}
+                        className="flex-1"
+                      />
+                      <span className="w-8 shrink-0 text-right tabular-nums">
+                        {Math.round(extras.thumbQuality * 100)}%
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>

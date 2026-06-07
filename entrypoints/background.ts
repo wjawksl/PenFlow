@@ -1,5 +1,6 @@
 // Background (Service Worker) — 두뇌·라우터 — 05 §2. M1: ③ 생성 + ⑤ 저장 + ⑥⑦ 라우팅.
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
+import { geminiImageAdapter } from '@/adapters/ai/gemini-image';
 import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
 import { extractH2Captions, generateBody } from '@/components/generator';
@@ -29,8 +30,8 @@ import type {
   VisualFetchRes,
   VisualSpec,
 } from '@/lib/messaging';
-import type { AppError, Result } from '@/types/common';
-import type { Visual } from '@/types/models';
+import type { AppError, BinaryOrRef, Result } from '@/types/common';
+import type { Settings, Visual } from '@/types/models';
 
 export default defineBackground(() => {
   wireProgressBroadcast();
@@ -119,8 +120,8 @@ async function handleGenerate(
   });
   if (!res.ok) return res;
 
-  // ⑨ 비주얼: 소제목 썸네일 옵션 ON 이면 H2 캡션으로 Canvas 합성(오프스크린). 실패해도 본문은 진행(R-7.1).
-  const visuals = await buildVisuals(res.value, req.options);
+  // ⑨ 비주얼: 소제목 썸네일 옵션 ON 이면 H2 캡션으로 생성(기본=Canvas, AI=Gemini). 실패해도 본문은 진행(R-7.1).
+  const visuals = await buildVisuals(res.value, req.options, settings);
 
   // ④ 부가요소 합성: 본문 마커 → 순서 보장 InsertQueue. 이미지 마커는 visuals 와 1:1(R-7.6).
   const composed = compose(res.value, req.options, visuals);
@@ -136,12 +137,24 @@ async function handleGenerate(
   return { ok: true, value: { payloadId: id, visuals } };
 }
 
-// ⑨ 소제목 썸네일 생성(M3 WP4). H2 캡션 → VisualSpec → 오프스크린 Canvas 합성.
+// ⑨ 소제목 썸네일 생성(M3 WP4/A3). H2 캡션 → 소스 모드별 생성.
 // 비주얼은 선택 단계(R-7.1) — 옵션 OFF 거나 실패하면 빈 배열로 본문만 진행한다.
-async function buildVisuals(contentHtml: string, options: GenerateReq['options']): Promise<Visual[]> {
+async function buildVisuals(
+  contentHtml: string,
+  options: GenerateReq['options'],
+  settings: Settings,
+): Promise<Visual[]> {
   if (!options.h2Thumbnail) return [];
   const captions = extractH2Captions(contentHtml);
   if (!captions.length) return [];
+
+  // AI 모드 + 키 있으면 Gemini 이미지 생성, 아니면 기본(Canvas). 키 없는 AI 선택은 기본으로 폴백.
+  const mode = options.h2Thumbnail.source ?? 'DEFAULT';
+  if (mode === 'AI') {
+    if (settings.aiImageCredential) return buildAiThumbnails(captions, settings);
+    progress('visual', 'AI 이미지 키가 없어 기본 썸네일로 만듭니다.', { level: 'warn' });
+  }
+
   progress('visual', `소제목 썸네일 ${captions.length}개 생성 중…`, { percent: 32 });
   const specs: VisualSpec[] = captions.map((h2Caption) => ({
     role: 'H2_THUMB',
@@ -159,6 +172,56 @@ async function buildVisuals(contentHtml: string, options: GenerateReq['options']
     return [];
   }
   return res.value.visuals;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// ⑨ AI(Gemini) 소제목 썸네일 — 캡션마다 이미지 생성 → Dexie 저장 → ref Visual.
+// 외부 호출은 캡션 사이 지연으로 rate limit 회피(R-7.5). 일부 실패는 건너뛰고 진행(R-7.1).
+async function buildAiThumbnails(captions: string[], settings: Settings): Promise<Visual[]> {
+  const credential = settings.aiImageCredential!;
+  const model = settings.aiImageModel ?? 'gemini-2.5-flash-image';
+  const out: Visual[] = [];
+  for (let i = 0; i < captions.length; i++) {
+    const caption = captions[i]!;
+    progress('visual', `AI 썸네일 ${i + 1}/${captions.length} 생성 중…`, { percent: 32 });
+    const res = await geminiImageAdapter.generate({ prompt: thumbPrompt(caption), model, credential });
+    if (!res.ok) {
+      progress('visual', `AI 썸네일 건너뜀: ${res.error.message}`, { level: 'warn' });
+      continue;
+    }
+    const id = crypto.randomUUID();
+    await dexieRecordStore.put({
+      id,
+      blob: inlineToBlob(res.value),
+      meta: { role: 'H2_THUMB', source: 'AI', caption },
+    });
+    out.push({
+      role: 'H2_THUMB',
+      source: 'AI',
+      data: { kind: 'ref', id },
+      dedupApplied: false, // AI 생성물은 매번 달라 별도 중복 회피 불필요
+      h2Caption: caption,
+    });
+    if (i < captions.length - 1) await sleep(600 + Math.floor(Math.random() * 600)); // 0.6~1.2s(R-7.5)
+  }
+  return out;
+}
+
+// 소제목 → 이미지 생성 프롬프트. 글자 렌더는 불안정해 텍스트 없는 일러스트로 요청.
+function thumbPrompt(caption: string): string {
+  return `한국어 블로그 소제목 "${caption}" 을 표현하는 깔끔한 일러스트 썸네일. 텍스트·글자 없이, 단순하고 밝은 배경, 가로형.`;
+}
+
+// adapter inline dataUrl(base64) → Blob. SW 엔 atob 사용 가능(FileReader 없음).
+function inlineToBlob(data: BinaryOrRef): Blob {
+  const dataUrl = data.kind === 'inline' ? data.dataUrl : '';
+  const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+  if (!m) return new Blob([], { type: 'image/png' });
+  const bin = atob(m[2]!);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: m[1]! });
 }
 
 // ⑥ WP8: ref 이미지 인출. content script 는 확장 IndexedDB 못 읽어 background 가 대신 읽어 dataUrl 전달.

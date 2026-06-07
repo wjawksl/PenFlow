@@ -15,8 +15,9 @@ export interface AITextAdapter {
 export interface AIImageAdapter {
   generate(req: {
     prompt: string;
+    model: string;
     credential: Credential;
-    modelRef?: ModelReference;
+    modelRef?: ModelReference; // 인물·화풍 일관성 동반(R-7.7, WP6)
   }): Promise<Result<BinaryOrRef>>;
 }
 

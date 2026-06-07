@@ -6,6 +6,7 @@ import type { Credential, Settings } from '@/types/models';
 export const DEFAULT_SETTINGS: Settings = {
   aiTextCredentials: [],
   aiModel: 'gemini-2.5-flash',
+  aiImageModel: 'gemini-2.5-flash-image', // ⑨ AI 이미지 기본 모델(옵션에서 교체)
   format: { lineHeight: '1.8', fontFamily: 'nanumgothic', fontSize: '15px' },
   densityRange: { min: 1, max: 5 }, // ⑩ 권장 밀도 기본 1~5%(R-8.2, 변경 가능)
 };
@@ -30,6 +31,24 @@ export async function setAiKey(apiKey: string, model: string): Promise<void> {
     fields: { apiKey: trimmed },
   };
   await saveSettings({ ...settings, aiTextCredentials: [cred], aiModel: model.trim() });
+}
+
+/** ⑨ AI 이미지 키·모델 저장(선택). 빈 키면 슬롯을 비워 AI 모드 비활성(R-7.1). */
+export async function setAiImageKey(apiKey: string, model: string): Promise<void> {
+  const settings = await loadSettings();
+  const trimmed = apiKey.trim();
+  const m = model.trim() || DEFAULT_SETTINGS.aiImageModel;
+  if (!trimmed) {
+    const { aiImageCredential: _drop, ...rest } = settings;
+    await saveSettings({ ...rest, aiImageModel: m });
+    return;
+  }
+  const cred: Credential = {
+    id: 'ai_image_1',
+    kind: 'ai_image',
+    fields: { apiKey: trimmed },
+  };
+  await saveSettings({ ...settings, aiImageCredential: cred, aiImageModel: m });
 }
 
 /** ⑩ 권장 밀도 범위 저장(R-8.2). min>max 등 비정상 입력은 호출부에서 정리. */
