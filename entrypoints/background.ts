@@ -1,7 +1,7 @@
 // Background (Service Worker) — 두뇌·라우터 — 05 §2. M1: ③ 생성 + ⑤ 저장 + ⑥⑦ 라우팅.
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
 import { compose } from '@/components/composer';
-import { generateBody } from '@/components/generator';
+import { extractH2Captions, generateBody } from '@/components/generator';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
 import { analyzeDensity } from '@/components/validator/density';
 import { getActiveCredential, loadSettings } from '@/components/settings';
@@ -20,8 +20,12 @@ import type {
   Msg,
   TopicCollectReq,
   TopicCollectRes,
+  VisualComposeReq,
+  VisualComposeRes,
+  VisualSpec,
 } from '@/lib/messaging';
 import type { AppError, Result } from '@/types/common';
+import type { Visual } from '@/types/models';
 
 export default defineBackground(() => {
   wireProgressBroadcast();
@@ -75,8 +79,10 @@ async function handleTopicCollect(req: TopicCollectReq): Promise<Result<TopicCol
   return { ok: true, value: { topics: res.value } };
 }
 
-// ③ 생성 → ⑤ 저장. M1: 키 1개, 순환 없음(R-0.2는 M2).
-async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: string }>> {
+// ③ 생성 → ⑨ 비주얼 → ④ 합성 → ⑤ 저장. M1: 키 1개, 순환 없음(R-0.2는 M2).
+async function handleGenerate(
+  req: GenerateReq,
+): Promise<Result<{ payloadId: string; visuals: Visual[] }>> {
   const settings = await loadSettings();
   const credential = getActiveCredential(settings);
   if (!credential) {
@@ -98,8 +104,11 @@ async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: str
   });
   if (!res.ok) return res;
 
-  // ④ 부가요소 합성: 본문 마커 → 순서 보장 InsertQueue. 정합성 위반(광고 누락 등) 시 차단(R-3.4).
-  const composed = compose(res.value, req.options);
+  // ⑨ 비주얼: 소제목 썸네일 옵션 ON 이면 H2 캡션으로 Canvas 합성(오프스크린). 실패해도 본문은 진행(R-7.1).
+  const visuals = await buildVisuals(res.value, req.options);
+
+  // ④ 부가요소 합성: 본문 마커 → 순서 보장 InsertQueue. 이미지 마커는 visuals 와 1:1(R-7.6).
+  const composed = compose(res.value, req.options, visuals);
   if (!composed.ok) {
     progress('compose', composed.error.message, { level: 'error' });
     return composed;
@@ -107,8 +116,32 @@ async function handleGenerate(req: GenerateReq): Promise<Result<{ payloadId: str
 
   const id = crypto.randomUUID();
   const payload = buildPayload(id, res.value, 'TEMP_SAVE', req.options, composed.value); // 기본 임시저장(R-5.1)
+  payload.visuals = visuals;
   await savePayload(payload);
-  return { ok: true, value: { payloadId: id } };
+  return { ok: true, value: { payloadId: id, visuals } };
+}
+
+// ⑨ 소제목 썸네일 생성(M3 WP4). H2 캡션 → VisualSpec → 오프스크린 Canvas 합성.
+// 비주얼은 선택 단계(R-7.1) — 옵션 OFF 거나 실패하면 빈 배열로 본문만 진행한다.
+async function buildVisuals(contentHtml: string, options: GenerateReq['options']): Promise<Visual[]> {
+  if (!options.h2Thumbnail) return [];
+  const captions = extractH2Captions(contentHtml);
+  if (!captions.length) return [];
+  progress('visual', `소제목 썸네일 ${captions.length}개 생성 중…`, { percent: 32 });
+  const specs: VisualSpec[] = captions.map((h2Caption) => ({
+    role: 'H2_THUMB',
+    source: 'DEFAULT',
+    h2Caption,
+  }));
+  const res = await callOffscreen<VisualComposeReq, VisualComposeRes>('visual.compose', {
+    specs,
+    style: options.h2Thumbnail,
+  });
+  if (!res.ok) {
+    progress('visual', `썸네일 생성 건너뜀: ${res.error.message}`, { level: 'warn' });
+    return [];
+  }
+  return res.value.visuals;
 }
 
 // ⑩ 키워드 밀도 검증(M3 WP2). 저장 본문에서 키워드 횟수·밀도 집계(경량, DOM 불필요).

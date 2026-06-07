@@ -11,7 +11,8 @@ import type {
 } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
-import type { DensityReport, PayloadOptions, Topic } from '@/types/models';
+import { refToObjectUrl } from '@/adapters/storage/record-store';
+import type { DensityReport, PayloadOptions, Topic, Visual } from '@/types/models';
 
 // 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
 const COMP_LABEL: Record<number, string> = { 1: '낮음', 2: '중간', 3: '높음' };
@@ -37,6 +38,8 @@ interface Extras {
   backOn: boolean;
   backUrl: string;
   sourceOn: boolean;
+  thumbOn: boolean; // ⑨ 소제목(H2) 썸네일 자동 생성(R-7.3)
+  thumbBg: string; // 썸네일 배경색
 }
 const EXTRAS_INIT: Extras = {
   adOn: false,
@@ -48,7 +51,19 @@ const EXTRAS_INIT: Extras = {
   backOn: false,
   backUrl: '',
   sourceOn: false,
+  thumbOn: false,
+  thumbBg: '#1f2937',
 };
+
+// 배경 밝기에 따라 가독성 좋은 글자색 선택(흰/검).
+function pickFg(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return '#f9fafb';
+  const n = parseInt(m[1]!, 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#111111' : '#f9fafb';
+}
 
 function buildOptions(e: Extras): PayloadOptions {
   const o: PayloadOptions = { includeSourceLink: e.sourceOn };
@@ -56,6 +71,7 @@ function buildOptions(e: Extras): PayloadOptions {
   if (e.shopOn && e.shopUrl.trim()) o.shoppingLink = { url: e.shopUrl.trim(), positions: [] };
   if (e.ctaOn && e.ctaText.trim()) o.ctaButton = `<a href="#">${e.ctaText.trim()}</a>`;
   if (e.backOn && e.backUrl.trim()) o.backlinkBlock = `<a href="${e.backUrl.trim()}">${e.backUrl.trim()}</a>`;
+  if (e.thumbOn) o.h2Thumbnail = { bg: e.thumbBg, fg: pickFg(e.thumbBg) };
   return o;
 }
 
@@ -80,6 +96,8 @@ export function App() {
   const [rangeOpen, setRangeOpen] = useState(false); // 권장범위 조정 펼침(평소 접힘, R-8.2)
   const [densReport, setDensReport] = useState<DensityReport | null>(null);
   const [densMsg, setDensMsg] = useState('');
+  const [visuals, setVisuals] = useState<Visual[]>([]); // ⑨ 생성된 비주얼(썸네일)
+  const [thumbUrls, setThumbUrls] = useState<string[]>([]); // 미리보기용 object URL
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -115,6 +133,26 @@ export function App() {
     if (phase === 'done') onAnalyzeDensity();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
+
+  // ⑨ 비주얼 ref → 미리보기 object URL. visuals 바뀌면 재생성, 언마운트/교체 시 revoke.
+  useEffect(() => {
+    let urls: string[] = [];
+    let alive = true;
+    Promise.all(
+      visuals.map((v) => (v.data.kind === 'ref' ? refToObjectUrl(v.data.id) : Promise.resolve(v.data.dataUrl))),
+    ).then((list) => {
+      if (!alive) {
+        list.forEach((u) => u && URL.revokeObjectURL(u));
+        return;
+      }
+      urls = list.filter((u): u is string => !!u);
+      setThumbUrls(urls);
+    });
+    return () => {
+      alive = false;
+      urls.forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, [visuals]);
 
   // 키워드 검색: 검색량·경쟁도(A)와 연관 검색어(C)를 한 번에 수집해 같은 화면에 노출.
   async function onKeywordSearch() {
@@ -205,13 +243,14 @@ export function App() {
       method: 'direct',
       options: buildOptions(extras),
     };
-    const res = await sendCmd<GenerateReq, { payloadId: string }>('generate.run', req);
+    const res = await sendCmd<GenerateReq, { payloadId: string; visuals: Visual[] }>('generate.run', req);
     if (!res.ok) {
       setPhase('error');
       setProgress(res.error.message);
       return;
     }
     payloadId.current = res.value.payloadId;
+    setVisuals(res.value.visuals ?? []); // ⑨ 생성된 썸네일 미리보기
     setPhase('generated');
     setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
     setDensReport(null); // 새 본문 → 이전 밀도 결과 초기화(밀도 검사는 삽입 후)
@@ -561,7 +600,48 @@ export function App() {
             />
             출처 링크 포함
           </label>
+
+          {/* ⑨ 소제목 썸네일(WP4) — 소제목 수만큼 배경+텍스트 카드 자동 생성(R-7.3) */}
+          <div className="space-y-1">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={extras.thumbOn}
+                onChange={(e) => setExtras((s) => ({ ...s, thumbOn: e.target.checked }))}
+              />
+              소제목 썸네일 자동 생성
+            </label>
+            {extras.thumbOn && (
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <span>배경색</span>
+                <input
+                  type="color"
+                  className="h-6 w-10 rounded border"
+                  value={extras.thumbBg}
+                  onChange={(e) => setExtras((s) => ({ ...s, thumbBg: e.target.value }))}
+                />
+                <span className="text-[11px] text-gray-400">소제목 개수만큼 1:1 생성</span>
+              </div>
+            )}
+          </div>
         </fieldset>
+
+        {/* ⑨ 비주얼 미리보기(WP4) — 생성된 썸네일. 에디터 실제 삽입은 후속(WP8). */}
+        {thumbUrls.length > 0 && (
+          <fieldset className="space-y-2 rounded border p-2">
+            <legend className="px-1 text-xs text-gray-500">썸네일 미리보기 ({thumbUrls.length})</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {thumbUrls.map((url, i) => (
+                <figure key={url} className="overflow-hidden rounded border">
+                  <img src={url} alt={visuals[i]?.h2Caption ?? `썸네일 ${i + 1}`} className="w-full" />
+                  <figcaption className="truncate px-1 py-0.5 text-[10px] text-gray-500">
+                    {visuals[i]?.h2Caption ?? ''}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </fieldset>
+        )}
 
       </main>
 

@@ -3,15 +3,22 @@
 import { MARKER_RE, MARKER_TYPES } from '@/lib/markers';
 import type { MarkerType } from '@/lib/markers';
 import { ok, type Result } from '@/types/common';
-import type { InsertQueue, InsertTask, PayloadOptions } from '@/types/models';
+import type { InsertQueue, InsertTask, PayloadOptions, Visual } from '@/types/models';
 import { validateComposition } from './validate';
 
 const MARKER_TYPE_SET = new Set<string>(MARKER_TYPES);
 const isMarkerType = (s: string): s is MarkerType => MARKER_TYPE_SET.has(s);
 const IMAGE_MARKERS = new Set<MarkerType>(['H1THUMB', 'H2THUMB', 'IMG']);
 
-/** 본문 HTML(마커 포함) + 옵션 → 순서 보장 InsertQueue. 정합성 위반 시 차단(Result 실패). */
-export function compose(contentHtml: string, options: PayloadOptions): Result<InsertQueue> {
+/**
+ * 본문 HTML(마커 포함) + 옵션 (+M3 비주얼) → 순서 보장 InsertQueue. 정합성 위반 시 차단.
+ * 이미지 마커(H1THUMB/H2THUMB/IMG)는 등장 순서대로 visuals 와 1:1 매칭(R-7.6). 비주얼 없으면 스킵(R-3.1).
+ */
+export function compose(
+  contentHtml: string,
+  options: PayloadOptions,
+  visuals: Visual[] = [],
+): Result<InsertQueue> {
   // scan 과 동일한 순서로 마커 수집(정합성 입력) — 여기선 char 위치가 필요해 matchAll 직접 사용.
   const matches = [...contentHtml.matchAll(MARKER_RE)].filter((m) => isMarkerType(m[1]!));
   const markers = matches.map((m, i) => ({
@@ -26,14 +33,21 @@ export function compose(contentHtml: string, options: PayloadOptions): Result<In
 
   const queue: InsertQueue = [];
   let cursor = 0;
+  let visualIdx = 0; // 이미지 마커 등장 순서 ↔ visuals 인덱스
   for (const m of matches) {
     const pos = m.index ?? 0;
     // 마커 이전 일반 텍스트 → text 작업(R-3.2 순서 보존).
     const pre = contentHtml.slice(cursor, pos);
     if (pre.trim()) queue.push({ type: 'text', content: pre });
 
-    const task = markerToTask(m[1] as MarkerType, options);
-    if (task) queue.push(task); // 리소스 없으면 스킵(R-3.1), AD 누락은 위 정합성에서 차단(R-3.4)
+    const type = m[1] as MarkerType;
+    if (IMAGE_MARKERS.has(type)) {
+      const v = visuals[visualIdx++]; // 순서대로 소비
+      if (v) queue.push({ type: 'image', content: v.data }); // 없으면 스킵(R-3.1, 비주얼 미생성)
+    } else {
+      const task = markerToTask(type, options);
+      if (task) queue.push(task); // 리소스 없으면 스킵(R-3.1), AD 누락은 위 정합성에서 차단(R-3.4)
+    }
 
     cursor = pos + m[0].length;
   }
@@ -44,7 +58,7 @@ export function compose(contentHtml: string, options: PayloadOptions): Result<In
 }
 
 function markerToTask(type: MarkerType, o: PayloadOptions): InsertTask | null {
-  if (IMAGE_MARKERS.has(type)) return null; // 비주얼 M3 — M2 스킵
+  // 이미지 마커(IMAGE_MARKERS)는 compose 본문에서 visuals 와 매칭 처리 → 여기 도달 안 함.
   switch (type) {
     case 'AD':
       return o.adNotice ? { type: 'adNotice', content: o.adNotice.text } : null;

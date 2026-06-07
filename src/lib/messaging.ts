@@ -73,8 +73,8 @@ export interface VisualSpec {
   h2Caption?: string;
 }
 export interface VisualComposeReq {
-  contentHtml: string;
   specs: VisualSpec[];
+  style?: { bg: string; fg: string }; // 썸네일 배경·글자색(없으면 기본)
 }
 export interface VisualComposeRes {
   visuals: Visual[];

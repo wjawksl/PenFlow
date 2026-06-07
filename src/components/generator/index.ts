@@ -4,6 +4,7 @@ import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { assemblePrompt } from '@/lib/prompt';
+import { make } from '@/lib/markers';
 import { markdownToHtml } from '@/components/validator/convert';
 import { ok, err, type Result } from '@/types/common';
 import type { Credential, PayloadOptions, Prompt, Topic } from '@/types/models';
@@ -46,12 +47,33 @@ export async function generateBody(params: GenerateParams): Promise<Result<strin
 
   progress('generate', '본문 생성 완료', { percent: 30 });
   // M3 WP1: marked 정식 변환(표·리스트·볼드 포함). 마커는 protect/restore 로 보존.
-  return ok(markdownToHtml(body));
+  let html = markdownToHtml(body);
+  // M3 WP4: 소제목 썸네일 옵션 ON 이면 각 <h2> 뒤에 H2THUMB 마커 결정적 주입(R-7.3 1:1).
+  if (options?.h2Thumbnail) html = injectH2ThumbMarkers(html);
+  return ok(html);
 }
 
 const H2_RE = /^\s*##\s+.+$/gm;
 function countH2(md: string): number {
   return (md.match(H2_RE) ?? []).length;
+}
+
+const H2_CLOSE_RE = /<\/h2>/gi;
+const H2_TEXT_RE = /<h2[^>]*>([\s\S]*?)<\/h2>/gi;
+
+/** 각 </h2> 뒤에 [[PF:H2THUMB:n]](n=1..) 주입. 소제목 수와 썸네일 1:1 보장(R-7.3). */
+export function injectH2ThumbMarkers(html: string): string {
+  let n = 0;
+  return html.replace(H2_CLOSE_RE, () => `</h2>\n${make('H2THUMB', String(++n))}`);
+}
+
+/** 소제목 텍스트를 등장 순서대로 추출(썸네일 캡션용). 태그 제거·공백 정리. */
+export function extractH2Captions(html: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(H2_TEXT_RE)) {
+    out.push(m[1]!.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+  }
+  return out;
 }
 
 /** 본문에서 제목 추출(07 §7): 첫 H2 텍스트. 없으면 주제 키워드. */
