@@ -7,6 +7,8 @@ import type {
   DensityAnalyzeRes,
   GenerateReq,
   ImageInsertReq,
+  ReferenceFetchReq,
+  ReferenceFetchRes,
   TopicCollectReq,
   TopicCollectRes,
 } from '@/lib/messaging';
@@ -27,6 +29,15 @@ const VERDICT: Record<'ok' | 'high' | 'low', { label: string; cls: string }> = {
 };
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
+
+// 참조 바구니 — 글 생성 시 [참고 자료] 로 합쳐지는 링크/메모 한 건.
+interface RefItem {
+  id: string;
+  kind: 'link' | 'note';
+  label: string; // 링크=제목/주소, 메모='메모'
+  text: string; // 추출 본문(링크) 또는 사용자 메모
+  status: 'loading' | 'ok' | 'error';
+}
 
 // 부가요소(④) 입력 상태 — 09 S3. 켜진 항목만 마커 emit + 합성.
 interface Extras {
@@ -84,6 +95,9 @@ function buildOptions(e: Extras): PayloadOptions {
 export function App() {
   const [keyword, setKeyword] = useState('');
   const [promptBody, setPromptBody] = useState(DEFAULT_PROMPT.body);
+  const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(링크·메모)
+  const [refUrl, setRefUrl] = useState('');
+  const [refNote, setRefNote] = useState('');
   const [extras, setExtras] = useState<Extras>(EXTRAS_INIT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
@@ -248,12 +262,51 @@ export function App() {
     setMsgFor('B', res.value.topics.length ? '' : '제목 없음');
   }
 
+  // 참조 바구니: 링크 추가 → background fetch → 본문 텍스트 추출(로딩 상태 표시).
+  async function onAddLink() {
+    const url = refUrl.trim();
+    if (!url) return;
+    const id = crypto.randomUUID();
+    setReferences((p) => [...p, { id, kind: 'link', label: url, text: '', status: 'loading' }]);
+    setRefUrl('');
+    const res = await sendCmd<ReferenceFetchReq, ReferenceFetchRes>('reference.fetch', { url });
+    setReferences((p) =>
+      p.map((r) =>
+        r.id === id
+          ? res.ok
+            ? { ...r, label: res.value.title, text: res.value.text, status: 'ok' }
+            : { ...r, label: res.error.message, status: 'error' }
+          : r,
+      ),
+    );
+  }
+
+  // 참조 바구니: 자유 메모 추가(링크 없이 직접 입력한 참고 내용).
+  function onAddNote() {
+    const t = refNote.trim();
+    if (!t) return;
+    setReferences((p) => [...p, { id: crypto.randomUUID(), kind: 'note', label: '메모', text: t, status: 'ok' }]);
+    setRefNote('');
+  }
+
+  const onRemoveRef = (id: string) => setReferences((p) => p.filter((r) => r.id !== id));
+
+  // 참조 바구니 → 프롬프트 [참고 자료] 문자열. 준비된(ok) 항목만, 링크는 출처 제목 머리말 부여.
+  function buildReference(): string | undefined {
+    const ready = references.filter((r) => r.status === 'ok' && r.text.trim());
+    if (!ready.length) return undefined;
+    return ready
+      .map((r) => (r.kind === 'link' ? `## 참고: ${r.label}\n${r.text}` : r.text))
+      .join('\n\n---\n\n');
+  }
+
   async function onGenerate() {
     setPhase('generating');
     setProgress('생성 중…');
     const req: GenerateReq = {
       topic: { id: crypto.randomUUID(), keyword },
       prompt: { name: DEFAULT_PROMPT.name, body: promptBody },
+      reference: buildReference(), // 참조 바구니 동반(참고자료)
       method: 'direct',
       options: buildOptions(extras),
     };
@@ -470,6 +523,76 @@ export function App() {
             onChange={(e) => setPromptBody(e.target.value)}
           />
         </div>
+
+        {/* 참조 바구니 — 링크·메모를 모아 글 생성 시 [참고 자료] 로 동반. */}
+        <fieldset className="space-y-2 rounded border p-2">
+          <legend className="px-1 text-xs text-gray-500">참조 자료 (선택)</legend>
+          <div className="flex gap-2">
+            <input
+              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+              placeholder="참고 링크 (https://…)"
+              value={refUrl}
+              onChange={(e) => setRefUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void onAddLink();
+              }}
+            />
+            <button
+              className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+              onClick={onAddLink}
+              disabled={!refUrl.trim()}
+              type="button"
+            >
+              ＋ 링크
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <input
+              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+              placeholder="직접 메모 (참고 내용)"
+              value={refNote}
+              onChange={(e) => setRefNote(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onAddNote();
+              }}
+            />
+            <button
+              className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+              onClick={onAddNote}
+              disabled={!refNote.trim()}
+              type="button"
+            >
+              ＋ 메모
+            </button>
+          </div>
+          {references.length > 0 && (
+            <ul className="space-y-1">
+              {references.map((r) => (
+                <li key={r.id} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
+                  <span className="shrink-0 text-gray-400">{r.kind === 'link' ? '🔗' : '📝'}</span>
+                  <span className="min-w-0 flex-1 truncate" title={r.label}>
+                    {r.status === 'loading' ? '불러오는 중…' : r.label}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-gray-400">
+                    {r.status === 'ok'
+                      ? `${r.text.length.toLocaleString()}자`
+                      : r.status === 'error'
+                        ? '실패'
+                        : ''}
+                  </span>
+                  <button
+                    className="shrink-0 text-gray-400 hover:text-red-500"
+                    onClick={() => onRemoveRef(r.id)}
+                    type="button"
+                    title="제거"
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </fieldset>
 
         {/* ⑩ 키워드 밀도(WP2) — 항상 표시(최소 크기→데이터 시 확장). 검사는 에디터 삽입 후(done)에만. R-8.2 */}
         <fieldset className="space-y-2 rounded border p-2">

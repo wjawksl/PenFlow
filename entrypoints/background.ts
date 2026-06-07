@@ -22,6 +22,8 @@ import type {
   ImageInsertReq,
   InsertStartReq,
   Msg,
+  ReferenceFetchReq,
+  ReferenceFetchRes,
   TopicCollectReq,
   TopicCollectRes,
   VisualComposeReq,
@@ -67,6 +69,11 @@ export default defineBackground(() => {
     if (msg.name === 'visual.fetch') {
       // ⑥ WP8: content script 가 ref 이미지 바이트 요청 → Dexie 읽어 dataUrl 반환.
       handleVisualFetch(msg.payload as VisualFetchReq).then(sendResponse);
+      return true;
+    }
+    if (msg.name === 'reference.fetch') {
+      // 참조 바구니: 링크 fetch → 본문 텍스트 추출(CORS 회피 위해 background).
+      handleReferenceFetch(msg.payload as ReferenceFetchReq).then(sendResponse);
       return true;
     }
     if (msg.name === 'insert.start') {
@@ -245,6 +252,58 @@ async function blobToDataUrl(blob: Blob | ArrayBuffer): Promise<string> {
   }
   const mime = isBlob && blob.type ? blob.type : 'image/jpeg';
   return `data:${mime};base64,${btoa(bin)}`;
+}
+
+// 참조 바구니: 링크 fetch → HTML → 오프스크린 변환(html2md)으로 본문 텍스트 추출.
+// background fetch 로 CORS 회피. 추출 텍스트는 프롬프트 [참고 자료] 로 합쳐진다.
+const REFERENCE_TIMEOUT_MS = 20_000;
+const REFERENCE_MAX_CHARS = 8000; // 프롬프트 비대 방지 — 링크당 상한
+async function handleReferenceFetch(req: ReferenceFetchReq): Promise<Result<ReferenceFetchRes>> {
+  let url: URL;
+  try {
+    url = new URL(req.url.trim());
+  } catch {
+    return failed(appError('REF_BAD_URL', '올바른 링크 주소가 아니에요.'));
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return failed(appError('REF_BAD_URL', 'http/https 링크만 가져올 수 있어요.'));
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REFERENCE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url.href, { signal: ctrl.signal, redirect: 'follow' });
+    if (!res.ok) return failed(appError('REF_FETCH', `링크를 가져오지 못했어요 (HTTP ${res.status}).`));
+    const html = await res.text();
+    const title = extractHtmlTitle(html) || url.hostname;
+
+    // 오프스크린 turndown 으로 마크다운 추출(script/style 등 잡태그 제거). 실패 시 거친 평문 폴백.
+    const conv = await callOffscreen<ConvertReq, ConvertRes>('convert.htmlmd', {
+      direction: 'html2md',
+      content: html,
+    });
+    const text = (conv.ok ? conv.value.content : stripTags(html)).trim().slice(0, REFERENCE_MAX_CHARS);
+    if (!text) return failed(appError('REF_EMPTY', '링크에서 읽을 본문을 찾지 못했어요.'));
+    return { ok: true, value: { title, text } };
+  } catch (e) {
+    const aborted = e instanceof DOMException && e.name === 'AbortError';
+    return failed(appError('REF_FETCH', aborted ? '링크 가져오기 시간 초과' : `링크 오류: ${String(e)}`));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractHtmlTitle(html: string): string {
+  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  return m ? m[1]!.replace(/\s+/g, ' ').trim() : '';
+}
+
+// 변환 실패 시 폴백 — 태그 제거 거친 평문(script/style 블록 먼저 삭제).
+function stripTags(html: string): string {
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ');
 }
 
 // ⑩ 키워드 밀도 검증(M3 WP2). 저장 본문에서 키워드 횟수·밀도 집계(경량, DOM 불필요).

@@ -26,6 +26,7 @@ export type ChannelName =
   | 'generate.run'
   | 'visual.compose'
   | 'visual.fetch'
+  | 'reference.fetch'
   | 'convert.htmlmd'
   | 'density.analyze'
   | 'insert.start'
@@ -90,6 +91,15 @@ export interface VisualFetchReq {
 }
 export interface VisualFetchRes {
   dataUrl: string; // base64 dataUrl (메시지로 안전 전달)
+}
+
+// 참조 바구니(WP — 참고자료 크롤링): 링크 1건을 background 가 fetch → 본문 텍스트 추출.
+export interface ReferenceFetchReq {
+  url: string;
+}
+export interface ReferenceFetchRes {
+  title: string;
+  text: string; // 마크다운 추출 본문(프롬프트 [참고 자료] 로 합쳐짐)
 }
 
 export interface InsertStartReq {

@@ -18,11 +18,14 @@ export default defineConfig({
     permissions: ['storage', 'sidePanel', 'scripting', 'tabs', 'offscreen'],
     // ② 주제 소스 — background fetch 로 CORS 회피(M2).
     // 검색광고(A)·블로그(B)·자동완성(C: 네이버/구글·유튜브).
+    // 참조 바구니: 사용자가 넣는 임의 링크를 background 가 fetch → 본문 추출(참고자료).
     host_permissions: [
       'https://blog.naver.com/*',
       'https://api.searchad.naver.com/*',
       'https://ac.search.naver.com/*',
       'https://suggestqueries.google.com/*',
+      'https://*/*',
+      'http://*/*',
     ],
     action: {},
     side_panel: {
