@@ -257,7 +257,7 @@ async function blobToDataUrl(blob: Blob | ArrayBuffer): Promise<string> {
 // 참조 바구니: 링크 fetch → HTML → 오프스크린 변환(html2md)으로 본문 텍스트 추출.
 // background fetch 로 CORS 회피. 추출 텍스트는 프롬프트 [참고 자료] 로 합쳐진다.
 const REFERENCE_TIMEOUT_MS = 20_000;
-const REFERENCE_MAX_CHARS = 8000; // 프롬프트 비대 방지 — 링크당 상한
+const REFERENCE_MAX_CHARS = 50_000; // 링크당 본문 상한 — 여유롭게(사이드패널 파일 상한과 동일)
 async function handleReferenceFetch(req: ReferenceFetchReq): Promise<Result<ReferenceFetchRes>> {
   let url: URL;
   try {

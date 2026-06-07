@@ -30,13 +30,21 @@ const VERDICT: Record<'ok' | 'high' | 'low', { label: string; cls: string }> = {
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
 
-// 참조 바구니 — 글 생성 시 [참고 자료] 로 합쳐지는 링크/메모 한 건.
+// 참조 바구니 — 글 생성 시 [참고 자료] 로 합쳐지는 링크/첨부파일 한 건.
 interface RefItem {
   id: string;
-  kind: 'link' | 'note';
-  label: string; // 링크=제목/주소, 메모='메모'
-  text: string; // 추출 본문(링크) 또는 사용자 메모
+  kind: 'link' | 'file';
+  label: string; // 링크=제목/주소, 파일=파일명
+  text: string; // 추출 본문
   status: 'loading' | 'ok' | 'error';
+}
+
+// 참조 1건당 본문 글자수 상한 — 프롬프트가 너무 커지지 않는 선에서 여유롭게.
+const REF_MAX_CHARS = 50_000;
+
+// 텍스트로 읽을 수 있는 첨부만 본문 추출(바이너리 문서 파서는 후속).
+function isTextFile(file: File): boolean {
+  return file.type.startsWith('text/') || /\.(txt|md|markdown|csv|json|html?|xml|log|ya?ml)$/i.test(file.name);
 }
 
 // 부가요소(④) 입력 상태 — 09 S3. 켜진 항목만 마커 emit + 합성.
@@ -95,9 +103,8 @@ function buildOptions(e: Extras): PayloadOptions {
 export function App() {
   const [keyword, setKeyword] = useState('');
   const [promptBody, setPromptBody] = useState(DEFAULT_PROMPT.body);
-  const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(링크·메모)
+  const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(링크·첨부파일)
   const [refUrl, setRefUrl] = useState('');
-  const [refNote, setRefNote] = useState('');
   const [extras, setExtras] = useState<Extras>(EXTRAS_INIT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
@@ -281,22 +288,37 @@ export function App() {
     );
   }
 
-  // 참조 바구니: 자유 메모 추가(링크 없이 직접 입력한 참고 내용).
-  function onAddNote() {
-    const t = refNote.trim();
-    if (!t) return;
-    setReferences((p) => [...p, { id: crypto.randomUUID(), kind: 'note', label: '메모', text: t, status: 'ok' }]);
-    setRefNote('');
+  // 참조 바구니: 첨부파일 추가 → 텍스트 파일이면 본문 읽기(사이드패널에서 File API 직접).
+  async function onAddFiles(files: FileList | null) {
+    if (!files?.length) return;
+    for (const file of Array.from(files)) {
+      const id = crypto.randomUUID();
+      setReferences((p) => [...p, { id, kind: 'file', label: file.name, text: '', status: 'loading' }]);
+      if (!isTextFile(file)) {
+        setReferences((p) =>
+          p.map((r) => (r.id === id ? { ...r, label: `${file.name} (텍스트 파일만 읽어요)`, status: 'error' } : r)),
+        );
+        continue;
+      }
+      try {
+        const text = (await file.text()).trim().slice(0, REF_MAX_CHARS);
+        setReferences((p) =>
+          p.map((r) => (r.id === id ? { ...r, text, status: text ? 'ok' : 'error' } : r)),
+        );
+      } catch {
+        setReferences((p) => p.map((r) => (r.id === id ? { ...r, status: 'error' } : r)));
+      }
+    }
   }
 
   const onRemoveRef = (id: string) => setReferences((p) => p.filter((r) => r.id !== id));
 
-  // 참조 바구니 → 프롬프트 [참고 자료] 문자열. 준비된(ok) 항목만, 링크는 출처 제목 머리말 부여.
+  // 참조 바구니 → 프롬프트 [참고 자료] 문자열. 준비된(ok) 항목만, 출처(링크 제목/파일명) 머리말 부여.
   function buildReference(): string | undefined {
     const ready = references.filter((r) => r.status === 'ok' && r.text.trim());
     if (!ready.length) return undefined;
     return ready
-      .map((r) => (r.kind === 'link' ? `## 참고: ${r.label}\n${r.text}` : r.text))
+      .map((r) => `## 참고(${r.kind === 'link' ? '링크' : '파일'}): ${r.label}\n${r.text}`)
       .join('\n\n---\n\n');
   }
 
@@ -524,74 +546,50 @@ export function App() {
           />
         </div>
 
-        {/* 참조 바구니 — 링크·메모를 모아 글 생성 시 [참고 자료] 로 동반. */}
-        <fieldset className="space-y-2 rounded border p-2">
+        {/* 참조 바구니 — 첨부파일·링크를 모아 글 생성 시 [참고 자료] 로 동반. 두 컴포넌트로 분리. */}
+        <fieldset className="space-y-3 rounded border p-2">
           <legend className="px-1 text-xs text-gray-500">참조 자료 (선택)</legend>
-          <div className="flex gap-2">
+
+          {/* 첨부파일 */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-gray-500">첨부파일</label>
             <input
-              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
-              placeholder="참고 링크 (https://…)"
-              value={refUrl}
-              onChange={(e) => setRefUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void onAddLink();
+              type="file"
+              multiple
+              accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.xml,.log,.yaml,.yml,text/*"
+              className="block w-full text-xs file:mr-2 file:rounded file:border file:bg-gray-50 file:px-2 file:py-1 file:text-xs"
+              onChange={(e) => {
+                void onAddFiles(e.target.files);
+                e.target.value = ''; // 같은 파일 재선택 허용
               }}
             />
-            <button
-              className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
-              onClick={onAddLink}
-              disabled={!refUrl.trim()}
-              type="button"
-            >
-              ＋ 링크
-            </button>
+            <RefList items={references.filter((r) => r.kind === 'file')} onRemove={onRemoveRef} />
           </div>
-          <div className="flex gap-2">
-            <input
-              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
-              placeholder="직접 메모 (참고 내용)"
-              value={refNote}
-              onChange={(e) => setRefNote(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') onAddNote();
-              }}
-            />
-            <button
-              className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
-              onClick={onAddNote}
-              disabled={!refNote.trim()}
-              type="button"
-            >
-              ＋ 메모
-            </button>
+
+          {/* 링크 */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-gray-500">링크</label>
+            <div className="flex gap-2">
+              <input
+                className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+                placeholder="참고 링크 (https://…)"
+                value={refUrl}
+                onChange={(e) => setRefUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void onAddLink();
+                }}
+              />
+              <button
+                className="shrink-0 rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+                onClick={onAddLink}
+                disabled={!refUrl.trim()}
+                type="button"
+              >
+                ＋ 링크
+              </button>
+            </div>
+            <RefList items={references.filter((r) => r.kind === 'link')} onRemove={onRemoveRef} />
           </div>
-          {references.length > 0 && (
-            <ul className="space-y-1">
-              {references.map((r) => (
-                <li key={r.id} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
-                  <span className="shrink-0 text-gray-400">{r.kind === 'link' ? '🔗' : '📝'}</span>
-                  <span className="min-w-0 flex-1 truncate" title={r.label}>
-                    {r.status === 'loading' ? '불러오는 중…' : r.label}
-                  </span>
-                  <span className="shrink-0 text-[10px] text-gray-400">
-                    {r.status === 'ok'
-                      ? `${r.text.length.toLocaleString()}자`
-                      : r.status === 'error'
-                        ? '실패'
-                        : ''}
-                  </span>
-                  <button
-                    className="shrink-0 text-gray-400 hover:text-red-500"
-                    onClick={() => onRemoveRef(r.id)}
-                    type="button"
-                    title="제거"
-                  >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
         </fieldset>
 
         {/* ⑩ 키워드 밀도(WP2) — 항상 표시(최소 크기→데이터 시 확장). 검사는 에디터 삽입 후(done)에만. R-8.2 */}
@@ -886,6 +884,34 @@ export function App() {
         </span>
       </footer>
     </div>
+  );
+}
+
+// 참조 항목 리스트 — 첨부파일·링크 공용. 상태(로딩/글자수/실패) + 제거.
+function RefList(props: { items: RefItem[]; onRemove: (id: string) => void }) {
+  if (!props.items.length) return null;
+  return (
+    <ul className="space-y-1">
+      {props.items.map((r) => (
+        <li key={r.id} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
+          <span className="shrink-0 text-gray-400">{r.kind === 'link' ? '🔗' : '📄'}</span>
+          <span className="min-w-0 flex-1 truncate" title={r.label}>
+            {r.status === 'loading' ? '불러오는 중…' : r.label}
+          </span>
+          <span className="shrink-0 text-[10px] text-gray-400">
+            {r.status === 'ok' ? `${r.text.length.toLocaleString()}자` : r.status === 'error' ? '실패' : ''}
+          </span>
+          <button
+            className="shrink-0 text-gray-400 hover:text-red-500"
+            onClick={() => props.onRemove(r.id)}
+            type="button"
+            title="제거"
+          >
+            ✕
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
