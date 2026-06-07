@@ -8,7 +8,15 @@ import { progress } from '@/lib/logger';
 import { EDITOR_DEFAULTS, SEL } from '@/lib/selectors';
 import { ok, err, type Result } from '@/types/common';
 import type { InsertTask, Payload, FormatPrefs } from '@/types/models';
-import { insertTitle, pasteHtml, resolveEl, sleep, waitForEl } from './dom';
+import {
+  insertTitle,
+  pasteHtml,
+  resolveEl,
+  sleep,
+  splitForSe,
+  stripLeadingTitle,
+  waitForEl,
+} from './dom';
 
 const P = EDITOR_DEFAULTS;
 
@@ -67,20 +75,31 @@ export async function runInsert(
   //    스파이크 실측: 표(.se-table)·링크(.se-link) 모두 HTML paste 로 변환됨 → 작업별 HTML paste.
   //    제목보다 먼저 한다: 제목 클릭이 활성 컴포넌트를 제목으로 바꿔, 이후 본문 paste 가 제목칸에 들어가기 때문.
   progress('insert', '본문 삽입 중…', { percent: 65 });
+  const title = extractTitle(payload.contentHtml, titleFallback);
   const queue = payload.insertQueue?.length
     ? payload.insertQueue
     : [{ type: 'text' as const, content: payload.contentHtml }];
+  let titleStripped = false;
   for (let i = 0; i < queue.length; i++) {
     const task = queue[i]!;
-    const html = sanitizeHtml(taskToHtml(task)); // M3 WP1 1-2: 삽입 직전 XSS·잡태그 정제
+    let html = sanitizeHtml(taskToHtml(task)); // M3 WP1 1-2: 삽입 직전 XSS·잡태그 정제
     if (!html) continue; // 이미지 등 M2 미지원 작업은 스킵
-    try {
-      body.focus();
-      pasteHtml(body, html);
-    } catch (e) {
-      return fail(ERR.INSERT_FAILED, `삽입 실패(${task.type}): ${String(e)}`, `삽입:${task.type}`);
+    // 본문(text)은 텍스트런 묶음·heading 강등으로 분할 — 볼드 번짐·문단 합쳐짐 방지(실측 기반).
+    // 첫 text 작업의 맨 앞 제목 heading 은 제목칸과 중복이므로 제거(한 번만).
+    if (task.type === 'text' && !titleStripped) {
+      html = stripLeadingTitle(html, title);
+      titleStripped = true;
     }
-    await sleep(jitter()); // 작업 간 대기(R-4.3) — 에디터 처리 속도 맞춤
+    const blocks = task.type === 'text' ? splitForSe(html) : [html];
+    for (const block of blocks) {
+      try {
+        body.focus();
+        pasteHtml(body, block);
+      } catch (e) {
+        return fail(ERR.INSERT_FAILED, `삽입 실패(${task.type}): ${String(e)}`, `삽입:${task.type}`);
+      }
+      await sleep(jitter()); // 작업 간 대기(R-4.3) — 에디터 처리 속도 맞춤
+    }
   }
 
   // 5) 서식 일괄 적용(best-effort) — 12.2-5, TC-INS-04. 정교한 툴바 조작은 후속.
@@ -90,7 +109,7 @@ export async function runInsert(
   //    (제목 클릭이 focus 를 가져가므로 본문 삽입 완료 후 처리해 충돌 방지.)
   progress('insert', '제목 입력 중…', { percent: 88 });
   const titleEl = resolveEl(SEL.titleField);
-  if (titleEl) await insertTitle(titleEl, extractTitle(payload.contentHtml, titleFallback));
+  if (titleEl) await insertTitle(titleEl, title);
 
   progress('insert', '삽입 완료', { percent: 92 });
   return ok(undefined);

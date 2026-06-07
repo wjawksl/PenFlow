@@ -1,6 +1,45 @@
 import { describe, it, expect } from 'vitest';
 import { taskToHtml } from '@/components/insert/engine';
+import { splitForSe, stripLeadingTitle } from '@/components/insert/dom';
 import type { InsertTask } from '@/types/models';
+
+// SE paste 분할(실측 기반) — 연속 텍스트는 한 묶음, heading 은 <p><strong> 강등, 구조 블록만 분리.
+describe('splitForSe', () => {
+  it('연속 텍스트(heading+p)는 한 조각으로 묶고 heading 은 평문 <p> 로 강등한다', () => {
+    const html = '<h2>제목</h2><p>문단1</p><p>문단2</p>';
+    expect(splitForSe(html)).toEqual(['<p>제목</p><p>문단1</p><p>문단2</p>']);
+  });
+
+  it('표·리스트 등 구조 블록은 텍스트런과 분리해 독립 조각으로 만든다', () => {
+    const html = '<p>앞</p><table><tr><td>a</td></tr></table><p>뒤</p>';
+    expect(splitForSe(html)).toEqual([
+      '<p>앞</p>',
+      '<table><tbody><tr><td>a</td></tr></tbody></table>',
+      '<p>뒤</p>',
+    ]);
+  });
+
+  it('블록 밖 맨 텍스트는 문단으로 감싼다', () => {
+    expect(splitForSe('그냥 텍스트')).toEqual(['<p>그냥 텍스트</p>']);
+  });
+});
+
+// 제목 중복 제거 — 본문 맨 앞 heading 이 제목칸과 같으면 본문에서만 뺀다.
+describe('stripLeadingTitle', () => {
+  it('첫 heading 이 제목과 같으면 제거한다', () => {
+    expect(stripLeadingTitle('<h2>제목</h2><p>본문</p>', '제목')).toBe('<p>본문</p>');
+  });
+
+  it('첫 heading 이 제목과 다르면 그대로 둔다', () => {
+    expect(stripLeadingTitle('<h2>다른제목</h2><p>본문</p>', '제목')).toBe(
+      '<h2>다른제목</h2><p>본문</p>',
+    );
+  });
+
+  it('첫 블록이 heading 이 아니면 그대로 둔다', () => {
+    expect(stripLeadingTitle('<p>제목</p><p>본문</p>', '제목')).toBe('<p>제목</p><p>본문</p>');
+  });
+});
 
 // WP6 정식화 TC — 스파이크 실측(표·링크 모두 HTML paste → SE 컴포넌트) 기반.
 // taskToHtml 은 ⑥ 삽입엔진이 각 InsertTask 를 paste 할 HTML 조각으로 변환하는 순수 함수.
