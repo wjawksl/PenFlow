@@ -4,31 +4,34 @@
 import type { RecordStore } from '@/adapters';
 import type { VisualSpec } from '@/lib/messaging';
 import type { Visual } from '@/types/models';
-import { DEFAULT_THUMB_STYLE, renderH2Thumbnail, type ThumbStyle } from './thumbnail';
+import { DEFAULT_THUMB_STYLE, renderH2Thumbnail, type RenderOpts, type ThumbStyle } from './thumbnail';
 
-type Renderer = (caption: string, style: ThumbStyle) => Promise<Blob>;
+type Renderer = (caption: string, style: ThumbStyle, opts?: RenderOpts) => Promise<Blob>;
 
 /**
  * spec 목록 → Visual[]. role 별로 이미지 생성 후 store 에 저장, ref 만 담아 반환.
  * render 주입 가능(테스트 시 가짜 렌더). 마커와 순서·개수 일치(R-7.6)는 호출부(specs 순서)가 보장.
+ * opts: 압축 품질(5-2) + 중복 회피 노이즈(5-1, R-7.4). dedup 기본 ON.
  */
 export async function composeVisuals(
   specs: VisualSpec[],
   store: RecordStore,
   style: ThumbStyle = DEFAULT_THUMB_STYLE,
   render: Renderer = renderH2Thumbnail,
+  opts: RenderOpts = {},
 ): Promise<Visual[]> {
+  const dedupApplied = opts.dedup !== false;
   const visuals: Visual[] = [];
   for (const spec of specs) {
     if (spec.role !== 'H2_THUMB') continue; // 이번 슬라이스는 소제목 썸네일만
-    const blob = await render(spec.h2Caption ?? '', style);
+    const blob = await render(spec.h2Caption ?? '', style, opts);
     const id = crypto.randomUUID();
     await store.put({ id, blob, meta: { role: spec.role, caption: spec.h2Caption } });
     visuals.push({
       role: spec.role,
       source: spec.source,
       data: { kind: 'ref', id },
-      dedupApplied: false, // 중복 회피는 WP5
+      dedupApplied,
       h2Caption: spec.h2Caption,
     });
   }

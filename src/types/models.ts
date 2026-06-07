@@ -78,7 +78,7 @@ export interface PayloadOptions {
   ctaButton?: string; // html
   backlinkBlock?: string; // html
   adNotice?: { text: string; position: string }; // 광고/협찬(R-3.4)
-  h2Thumbnail?: { bg: string; fg: string }; // ⑨ 소제목 썸네일 자동 생성(R-7.3). 지정 시 ON.
+  h2Thumbnail?: { bg: string; fg: string; quality?: number }; // ⑨ 소제목 썸네일 자동 생성(R-7.3). 지정 시 ON. quality=압축률(WP5)
   includeSourceLink: boolean;
 }
 

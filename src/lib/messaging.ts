@@ -77,6 +77,8 @@ export interface VisualSpec {
 export interface VisualComposeReq {
   specs: VisualSpec[];
   style?: { bg: string; fg: string }; // 썸네일 배경·글자색(없으면 기본)
+  quality?: number; // JPEG 압축 품질 0~1(WP5 5-2)
+  dedup?: boolean; // 중복 회피 노이즈(WP5 5-1, R-7.4). 기본 ON
 }
 export interface VisualComposeRes {
   visuals: Visual[];

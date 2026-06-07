@@ -37,7 +37,10 @@ chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
 
 // ⑨ 소제목 썸네일 Canvas 합성(M3 WP4). 이미지 blob 은 Dexie 에 저장, Visual 엔 ref 만.
 async function handleVisualCompose(req: VisualComposeReq): Promise<Result<VisualComposeRes>> {
-  const visuals = await composeVisuals(req.specs, dexieRecordStore, req.style);
+  const visuals = await composeVisuals(req.specs, dexieRecordStore, req.style, undefined, {
+    quality: req.quality,
+    dedup: req.dedup,
+  });
   return { ok: true, value: { visuals } };
 }
 

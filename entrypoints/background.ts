@@ -151,6 +151,8 @@ async function buildVisuals(contentHtml: string, options: GenerateReq['options']
   const res = await callOffscreen<VisualComposeReq, VisualComposeRes>('visual.compose', {
     specs,
     style: options.h2Thumbnail,
+    quality: options.h2Thumbnail.quality, // 압축 품질(WP5 5-2)
+    dedup: true, // 중복 회피 항상 ON(R-7.4, WP5 5-1)
   });
   if (!res.ok) {
     progress('visual', `썸네일 생성 건너뜀: ${res.error.message}`, { level: 'warn' });

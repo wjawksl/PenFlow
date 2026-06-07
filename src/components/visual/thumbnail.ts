@@ -8,6 +8,13 @@ export interface ThumbStyle {
 }
 export const DEFAULT_THUMB_STYLE: ThumbStyle = { bg: '#1f2937', fg: '#f9fafb' };
 
+// 재인코딩 옵션(WP5). quality=JPEG 압축률(10.6), dedup=중복 회피 노이즈(R-7.4).
+export interface RenderOpts {
+  quality?: number; // 0~1, 없으면 DEFAULT_QUALITY
+  dedup?: boolean; // 기본 ON — 매 렌더 고유 바이트(네이버 중복 이미지 회피)
+}
+export const DEFAULT_QUALITY = 0.85;
+
 export const THUMB_W = 800;
 export const THUMB_H = 420;
 
@@ -32,18 +39,42 @@ export function wrapLines(text: string, fits: (line: string) => boolean): string
   return lines.length ? lines : [''];
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+function canvasToBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (b) => (b ? resolve(b) : reject(new Error('canvas.toBlob 실패'))),
       'image/jpeg',
-      0.9,
+      quality,
     );
   });
 }
 
+// #rrggbb → [r,g,b]. 파싱 실패 시 어두운 회색 폴백.
+function parseHex(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  const n = m ? parseInt(m[1]!, 16) : 0x1f2937;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * 중복 회피(R-7.4) — 모서리(배경 영역) 픽셀 1개에 배경색 ±3 변이를 준다.
+ * 육안 비구분이지만 JPEG DCT 블록이 바뀌어 같은 캡션·스타일도 매 렌더 고유 바이트가 된다.
+ * (Canvas 재인코딩 자체가 EXIF 등 메타데이터를 제거하므로 별도 처리 불필요.)
+ */
+function applyDedupNoise(ctx: CanvasRenderingContext2D, bg: string): void {
+  const [r, g, b] = parseHex(bg);
+  const clamp = (v: number): number => Math.max(0, Math.min(255, v));
+  const jitter = (): number => Math.floor(Math.random() * 7) - 3; // -3..3
+  ctx.fillStyle = `rgb(${clamp(r + jitter())},${clamp(g + jitter())},${clamp(b + jitter())})`;
+  ctx.fillRect(Math.floor(Math.random() * 8), Math.floor(Math.random() * 8), 1, 1);
+}
+
 /** 배경색 채우고 소제목 텍스트를 중앙 정렬·줄바꿈해 합성 → JPEG Blob. DOM 필요(오프스크린 전용). */
-export async function renderH2Thumbnail(caption: string, style: ThumbStyle): Promise<Blob> {
+export async function renderH2Thumbnail(
+  caption: string,
+  style: ThumbStyle,
+  opts: RenderOpts = {},
+): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = THUMB_W;
   canvas.height = THUMB_H;
@@ -68,5 +99,7 @@ export async function renderH2Thumbnail(caption: string, style: ThumbStyle): Pro
     ctx.fillText(line, THUMB_W / 2, y);
     y += lineH;
   }
-  return canvasToBlob(canvas);
+
+  if (opts.dedup !== false) applyDedupNoise(ctx, style.bg);
+  return canvasToBlob(canvas, opts.quality ?? DEFAULT_QUALITY);
 }

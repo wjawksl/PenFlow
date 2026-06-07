@@ -71,7 +71,7 @@ describe('composeVisuals', () => {
     const visuals = await composeVisuals(specs, store, undefined, fakeRender);
     expect(visuals).toHaveLength(2);
     expect(puts).toHaveLength(2);
-    expect(visuals[0]).toMatchObject({ role: 'H2_THUMB', h2Caption: 'A', dedupApplied: false });
+    expect(visuals[0]).toMatchObject({ role: 'H2_THUMB', h2Caption: 'A', dedupApplied: true });
     expect(visuals[0]!.data.kind).toBe('ref');
   });
 
@@ -80,5 +80,22 @@ describe('composeVisuals', () => {
     const specs: VisualSpec[] = [{ role: 'BODY_IMAGE', source: 'AI' }];
     const visuals = await composeVisuals(specs, store, undefined, fakeRender);
     expect(visuals).toHaveLength(0);
+  });
+
+  // WP5 — 압축 품질·중복 회피 옵션 전달(R-7.4).
+  it('opts 를 렌더러에 전달하고 dedup 여부를 Visual 에 반영한다', async () => {
+    const { store } = fakeStore();
+    const seen: Array<unknown> = [];
+    const spyRender = async (_c: string, _s: { bg: string; fg: string }, opts?: unknown) => {
+      seen.push(opts);
+      return new Blob(['x'], { type: 'image/jpeg' });
+    };
+    const specs: VisualSpec[] = [{ role: 'H2_THUMB', source: 'DEFAULT', h2Caption: 'A' }];
+    const visuals = await composeVisuals(specs, store, undefined, spyRender, {
+      quality: 0.5,
+      dedup: false,
+    });
+    expect(seen[0]).toEqual({ quality: 0.5, dedup: false });
+    expect(visuals[0]!.dedupApplied).toBe(false); // dedup:false 면 미적용 표시
   });
 });

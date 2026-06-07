@@ -12,7 +12,7 @@ import type {
 } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
-import { refToObjectUrl } from '@/adapters/storage/record-store';
+import { dexieRecordStore, refToObjectUrl } from '@/adapters/storage/record-store';
 import type { DensityReport, PayloadOptions, Topic, Visual } from '@/types/models';
 
 // 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
@@ -41,6 +41,7 @@ interface Extras {
   sourceOn: boolean;
   thumbOn: boolean; // ⑨ 소제목(H2) 썸네일 자동 생성(R-7.3)
   thumbBg: string; // 썸네일 배경색
+  thumbQuality: number; // JPEG 압축 품질 0~1(WP5 5-2)
 }
 const EXTRAS_INIT: Extras = {
   adOn: false,
@@ -54,6 +55,7 @@ const EXTRAS_INIT: Extras = {
   sourceOn: false,
   thumbOn: false,
   thumbBg: '#1f2937',
+  thumbQuality: 0.85,
 };
 
 // 배경 밝기에 따라 가독성 좋은 글자색 선택(흰/검).
@@ -72,7 +74,7 @@ function buildOptions(e: Extras): PayloadOptions {
   if (e.shopOn && e.shopUrl.trim()) o.shoppingLink = { url: e.shopUrl.trim(), positions: [] };
   if (e.ctaOn && e.ctaText.trim()) o.ctaButton = `<a href="#">${e.ctaText.trim()}</a>`;
   if (e.backOn && e.backUrl.trim()) o.backlinkBlock = `<a href="${e.backUrl.trim()}">${e.backUrl.trim()}</a>`;
-  if (e.thumbOn) o.h2Thumbnail = { bg: e.thumbBg, fg: pickFg(e.thumbBg) };
+  if (e.thumbOn) o.h2Thumbnail = { bg: e.thumbBg, fg: pickFg(e.thumbBg), quality: e.thumbQuality };
   return o;
 }
 
@@ -101,6 +103,7 @@ export function App() {
   const [thumbUrls, setThumbUrls] = useState<string[]>([]); // 미리보기용 object URL
   const [imgInserting, setImgInserting] = useState<number | null>(null); // 수동 삽입 중인 썸네일 index
   const [imgMsg, setImgMsg] = useState(''); // 썸네일 삽입 결과 메시지
+  const [storageUsage, setStorageUsage] = useState<{ usage: number; quota: number } | null>(null); // 용량 미터(WP5 5-3)
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -136,6 +139,11 @@ export function App() {
     if (phase === 'done') onAnalyzeDensity();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
+
+  // 용량 미터(WP5 5-3) — 마운트 시 + 비주얼 저장 후 갱신. 확장 origin 이라 Dexie 직접 조회.
+  useEffect(() => {
+    dexieRecordStore.estimateUsage().then(setStorageUsage).catch(() => setStorageUsage(null));
+  }, [visuals]);
 
   // ⑨ 비주얼 ref → 미리보기 object URL. visuals 바뀌면 재생성, 언마운트/교체 시 revoke.
   useEffect(() => {
@@ -626,15 +634,33 @@ export function App() {
               소제목 썸네일 자동 생성
             </label>
             {extras.thumbOn && (
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <span>배경색</span>
-                <input
-                  type="color"
-                  className="h-6 w-10 rounded border"
-                  value={extras.thumbBg}
-                  onChange={(e) => setExtras((s) => ({ ...s, thumbBg: e.target.value }))}
-                />
-                <span className="text-[11px] text-gray-400">소제목 개수만큼 1:1 생성</span>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>배경색</span>
+                  <input
+                    type="color"
+                    className="h-6 w-10 rounded border"
+                    value={extras.thumbBg}
+                    onChange={(e) => setExtras((s) => ({ ...s, thumbBg: e.target.value }))}
+                  />
+                  <span className="text-[11px] text-gray-400">소제목 개수만큼 1:1 생성</span>
+                </div>
+                {/* 압축 품질(WP5 5-2) — 낮을수록 용량↓·화질↓. 중복 회피 노이즈는 항상 적용(R-7.4). */}
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span className="shrink-0">압축 품질</span>
+                  <input
+                    type="range"
+                    min={0.3}
+                    max={1}
+                    step={0.05}
+                    value={extras.thumbQuality}
+                    onChange={(e) => setExtras((s) => ({ ...s, thumbQuality: Number(e.target.value) }))}
+                    className="flex-1"
+                  />
+                  <span className="w-8 shrink-0 text-right tabular-nums">
+                    {Math.round(extras.thumbQuality * 100)}%
+                  </span>
+                </div>
               </div>
             )}
           </div>
@@ -666,6 +692,7 @@ export function App() {
               ))}
             </div>
             {imgMsg && <p className="text-xs text-gray-500">{imgMsg}</p>}
+            {storageUsage && storageUsage.quota > 0 && <StorageMeter usage={storageUsage} />}
           </fieldset>
         )}
 
@@ -702,6 +729,28 @@ export function App() {
           {phase === 'done' ? '✅ 임시저장 완료' : progress || '대기 중'}
         </span>
       </footer>
+    </div>
+  );
+}
+
+// 용량 미터(WP5 5-3) — 저장된 이미지 등 확장 origin 사용량/할당량 표시.
+function formatMB(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+function StorageMeter(props: { usage: { usage: number; quota: number } }) {
+  const { usage, quota } = props.usage;
+  const pct = Math.min(100, (usage / quota) * 100);
+  return (
+    <div className="space-y-0.5 text-[11px] text-gray-400">
+      <div className="flex justify-between">
+        <span>저장 용량</span>
+        <span className="tabular-nums">
+          {formatMB(usage)} / {formatMB(quota)}
+        </span>
+      </div>
+      <div className="h-1 overflow-hidden rounded bg-gray-100">
+        <div className="h-full bg-gray-400" style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
