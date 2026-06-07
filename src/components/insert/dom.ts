@@ -43,6 +43,9 @@ export function hasEditorHere(): boolean {
 // 자체 컴포넌트가 돼야 하는 구조 블록 — 따로 paste 해야 SE 가 표/리스트 컴포넌트로 만든다.
 const SE_STRUCTURAL = new Set(['TABLE', 'UL', 'OL', 'HR', 'BLOCKQUOTE', 'PRE']);
 
+// 문단 사이 공백 줄 — 인접 문단마다 빈 문단을 끼워 한 줄 띄운다(가독성).
+const PARA_SPACER = '<p><br></p>';
+
 /**
  * 본문 HTML 을 SmartEditor paste 단위로 분할.
  * 실측(에디터 DOM 덤프, 2026-06): SE 는 (1) 따로 paste 한 텍스트 블록을 현재 문단에 합치고,
@@ -50,14 +53,15 @@ const SE_STRUCTURAL = new Set(['TABLE', 'UL', 'OL', 'HR', 'BLOCKQUOTE', 'PRE']);
  * 해결: 연속 텍스트(p/heading)는 한 번에 묶어 paste(=SE 가 한 paste 안의 <p> 경계로 문단 생성),
  * heading 은 <p><strong> 으로 강등(볼드 트리거 제거, 볼드는 소제목 글자에만 국한),
  * 표·리스트 등 구조 블록만 별도 paste(독립 컴포넌트화).
+ * 문단 사이는 PARA_SPACER(빈 문단)로 한 줄 띄운다.
  */
 export function splitForSe(html: string): string[] {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const out: string[] = [];
-  let buf = '';
+  let parts: string[] = []; // 누적 중인 텍스트런 문단들(빈 문단으로 이어 붙임)
   const flush = (): void => {
-    if (buf) out.push(buf);
-    buf = '';
+    if (parts.length) out.push(parts.join(PARA_SPACER));
+    parts = [];
   };
   for (const node of Array.from(doc.body.childNodes)) {
     if (node.nodeType === Node.ELEMENT_NODE) {
@@ -66,10 +70,10 @@ export function splitForSe(html: string): string[] {
         flush();
         out.push(el.outerHTML); // 표/리스트 등은 독립 paste
       } else {
-        buf += demoteHeading(el); // p·heading 등은 텍스트런으로 누적
+        parts.push(demoteHeading(el)); // p·heading 등은 텍스트런으로 누적
       }
     } else if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
-      buf += `<p>${node.textContent.trim()}</p>`; // 블록 밖 맨 텍스트 → 문단
+      parts.push(`<p>${node.textContent.trim()}</p>`); // 블록 밖 맨 텍스트 → 문단
     }
   }
   flush();
