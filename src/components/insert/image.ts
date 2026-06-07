@@ -3,6 +3,7 @@
 // background(visual.fetch) 경유로 받는다. SE 본문에 이미지 File 을 paste(사용자 스크린샷 붙여넣기와
 // 동일 경로) → SE 가 네이버 서버로 업로드 → placeholder 를 업로드 URL 로 교체한다.
 import type { VisualFetchReq, VisualFetchRes } from '@/lib/messaging';
+import { EDITOR_DEFAULTS } from '@/lib/selectors';
 import { sendCmd } from '@/lib/ui-bus';
 import type { BinaryOrRef } from '@/types/common';
 import { sleep } from './dom';
@@ -65,4 +66,19 @@ export async function waitImageUploaded(
     if (Date.now() >= deadline) return false;
     await sleep(intervalMs);
   }
+}
+
+/**
+ * 비주얼 1개를 에디터 현재 커서에 삽입(수동 경로 — 사용자가 사이드패널에서 골라 넣음).
+ * 바이트 인출 → File → body 에 paste → 삽입 완료 폴링. 성공 시 true.
+ * body.focus() 는 기존 선택(커서)을 보존하므로 사용자가 둔 위치에 들어간다.
+ */
+export async function insertImageAtCursor(body: HTMLElement, data: BinaryOrRef): Promise<boolean> {
+  const dataUrl = await fetchVisualDataUrl(data);
+  if (!dataUrl) return false;
+  const doc = body.ownerDocument;
+  const before = countEditorImages(doc);
+  body.focus();
+  if (!pasteImage(body, dataUrlToFile(dataUrl))) return false;
+  return waitImageUploaded(doc, before, EDITOR_DEFAULTS.imageUploadTimeout);
 }

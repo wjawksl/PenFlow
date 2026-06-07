@@ -6,7 +6,7 @@ import { sanitizeHtml } from '@/components/validator/convert';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { EDITOR_DEFAULTS, SEL } from '@/lib/selectors';
-import { ok, err, type BinaryOrRef, type Result } from '@/types/common';
+import { ok, err, type Result } from '@/types/common';
 import type { InsertTask, Payload, FormatPrefs } from '@/types/models';
 import {
   insertTitle,
@@ -17,13 +17,6 @@ import {
   stripLeadingTitle,
   waitForEl,
 } from './dom';
-import {
-  countEditorImages,
-  dataUrlToFile,
-  fetchVisualDataUrl,
-  pasteImage,
-  waitImageUploaded,
-} from './image';
 
 const P = EDITOR_DEFAULTS;
 
@@ -89,12 +82,8 @@ export async function runInsert(
   let titleStripped = false;
   for (let i = 0; i < queue.length; i++) {
     const task = queue[i]!;
-    // 이미지(⑨ 비주얼) — WP8: 바이트 인출 → SE 본문에 paste(업로드) → 완료 대기.
-    if (task.type === 'image') {
-      await insertImageTask(body, task); // 실패해도 본문은 계속(비주얼은 선택, R-7.1)
-      await sleep(jitter());
-      continue;
-    }
+    // 이미지(⑨ 비주얼)는 자동 삽입하지 않는다 — 사용자가 사이드패널에서 골라 커서에 수동 삽입(image.insert).
+    if (task.type === 'image') continue;
     let html = sanitizeHtml(taskToHtml(task)); // M3 WP1 1-2: 삽입 직전 XSS·잡태그 정제
     if (!html) continue; // 리소스 없는 작업은 스킵
     // 본문(text)은 텍스트런 묶음·heading 강등으로 분할 — 볼드 번짐·문단 합쳐짐 방지(실측 기반).
@@ -126,26 +115,6 @@ export async function runInsert(
 
   progress('insert', '삽입 완료', { percent: 92 });
   return ok(undefined);
-}
-
-// ⑥ WP8 이미지 작업: ref/inline 바이트 → File → SE paste(업로드) → 완료 폴링.
-// 실패(인출 실패·SE 미가로챔·타임아웃)는 경고만 — 비주얼은 선택 단계라 본문 진행을 막지 않는다(R-7.1).
-async function insertImageTask(body: HTMLElement, task: InsertTask): Promise<void> {
-  const data = task.content as BinaryOrRef;
-  const dataUrl = await fetchVisualDataUrl(data);
-  if (!dataUrl) {
-    progress('insert', '이미지 인출 실패 — 건너뜀', { level: 'warn' });
-    return;
-  }
-  const doc = body.ownerDocument; // 이미지는 body 밖 article 레벨에 들어가므로 문서 전체 기준
-  const before = countEditorImages(doc);
-  body.focus();
-  if (!pasteImage(body, dataUrlToFile(dataUrl))) {
-    progress('insert', '이미지 paste 미반영 — 건너뜀', { level: 'warn' });
-    return;
-  }
-  const done = await waitImageUploaded(doc, before, P.imageUploadTimeout);
-  if (!done) progress('insert', '이미지 업로드 완료 확인 실패(타임아웃)', { level: 'warn' });
 }
 
 async function ensureFocus(body: HTMLElement): Promise<boolean> {

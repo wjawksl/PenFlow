@@ -6,6 +6,7 @@ import type {
   DensityAnalyzeReq,
   DensityAnalyzeRes,
   GenerateReq,
+  ImageInsertReq,
   TopicCollectReq,
   TopicCollectRes,
 } from '@/lib/messaging';
@@ -98,6 +99,8 @@ export function App() {
   const [densMsg, setDensMsg] = useState('');
   const [visuals, setVisuals] = useState<Visual[]>([]); // ⑨ 생성된 비주얼(썸네일)
   const [thumbUrls, setThumbUrls] = useState<string[]>([]); // 미리보기용 object URL
+  const [imgInserting, setImgInserting] = useState<number | null>(null); // 수동 삽입 중인 썸네일 index
+  const [imgMsg, setImgMsg] = useState(''); // 썸네일 삽입 결과 메시지
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -298,6 +301,17 @@ export function App() {
       setProgress(res.error.message);
     }
     // 성공 시 step.done 이벤트로 phase=done 처리.
+  }
+
+  // ⑨ 수동 이미지 삽입: 고른 썸네일을 에디터 현재 커서에 넣는다(자동 삽입 안 함, 사용자 통제).
+  async function onInsertImage(i: number) {
+    const v = visuals[i];
+    if (!v || v.data.kind !== 'ref') return;
+    setImgInserting(i);
+    setImgMsg('이미지 삽입 중… (에디터에서 넣을 위치를 먼저 클릭하세요)');
+    const res = await sendCmd<ImageInsertReq, void>('image.insert', { id: v.data.id });
+    setImgInserting(null);
+    setImgMsg(res.ok ? `썸네일 ${i + 1} 삽입됨` : res.error.message);
   }
 
   const busy = phase === 'generating' || phase === 'inserting';
@@ -626,20 +640,32 @@ export function App() {
           </div>
         </fieldset>
 
-        {/* ⑨ 비주얼 미리보기(WP4) — 생성된 썸네일. 에디터 실제 삽입은 후속(WP8). */}
+        {/* ⑨ 비주얼 미리보기(WP4/WP8) — 생성된 썸네일. 자동 삽입 안 함, 골라서 커서에 수동 삽입. */}
         {thumbUrls.length > 0 && (
           <fieldset className="space-y-2 rounded border p-2">
-            <legend className="px-1 text-xs text-gray-500">썸네일 미리보기 ({thumbUrls.length})</legend>
+            <legend className="px-1 text-xs text-gray-500">썸네일 ({thumbUrls.length}) · 골라서 삽입</legend>
+            <p className="text-[11px] text-gray-400">
+              에디터에서 넣을 위치를 클릭한 뒤 아래 “삽입”을 누르세요.
+            </p>
             <div className="grid grid-cols-2 gap-2">
               {thumbUrls.map((url, i) => (
                 <figure key={url} className="overflow-hidden rounded border">
                   <img src={url} alt={visuals[i]?.h2Caption ?? `썸네일 ${i + 1}`} className="w-full" />
-                  <figcaption className="truncate px-1 py-0.5 text-[10px] text-gray-500">
+                  <figcaption className="truncate px-1 pt-0.5 text-[10px] text-gray-500">
                     {visuals[i]?.h2Caption ?? ''}
                   </figcaption>
+                  <button
+                    className="w-full border-t py-1 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    onClick={() => onInsertImage(i)}
+                    disabled={imgInserting !== null}
+                    type="button"
+                  >
+                    {imgInserting === i ? '삽입 중…' : '＋ 삽입'}
+                  </button>
                 </figure>
               ))}
             </div>
+            {imgMsg && <p className="text-xs text-gray-500">{imgMsg}</p>}
           </fieldset>
         )}
 

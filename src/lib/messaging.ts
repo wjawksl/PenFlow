@@ -29,6 +29,7 @@ export type ChannelName =
   | 'convert.htmlmd'
   | 'density.analyze'
   | 'insert.start'
+  | 'image.insert'
   | 'publish.do'
   | 'step.done'
   | 'progress';
@@ -92,6 +93,9 @@ export interface VisualFetchRes {
 export interface InsertStartReq {
   payloadId: string;
 } // ④→⑥: id만 전달(05 §5)
+export interface ImageInsertReq {
+  id: string; // ⑨ 비주얼 RecordStore(Dexie) ref id — 사이드패널이 골라 에디터 커서에 수동 삽입(WP8)
+}
 export interface PublishReq {
   payloadId: string;
   publishOption: PublishOption;

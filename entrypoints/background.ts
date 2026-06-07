@@ -12,11 +12,13 @@ import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { callOffscreen } from '@/lib/offscreen';
 import type {
+  ChannelName,
   ConvertReq,
   ConvertRes,
   DensityAnalyzeReq,
   DensityAnalyzeRes,
   GenerateReq,
+  ImageInsertReq,
   InsertStartReq,
   Msg,
   TopicCollectReq,
@@ -68,6 +70,11 @@ export default defineBackground(() => {
     }
     if (msg.name === 'insert.start') {
       handleInsert(msg.payload as InsertStartReq).then(sendResponse);
+      return true;
+    }
+    if (msg.name === 'image.insert') {
+      // ⑨ 수동 이미지 삽입: 사이드패널이 고른 비주얼을 에디터 탭 content script 로 전달.
+      forwardToEditor('image.insert', msg.payload).then(sendResponse);
       return true;
     }
     return false;
@@ -186,6 +193,12 @@ async function handleDensity(req: DensityAnalyzeReq): Promise<Result<DensityAnal
 
 // ⑥⑦ 라우팅: 네이버 글쓰기 탭의 content script 로 전달.
 async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
+  progress('insert', '에디터 탭으로 전달…', { percent: 35 });
+  return forwardToEditor('insert.start', req);
+}
+
+// 네이버 글쓰기 탭 content script 로 cmd 전달(본문 프레임이 응답). insert.start·image.insert 공용.
+async function forwardToEditor<T>(name: ChannelName, payload: T): Promise<Result<void>> {
   const tabs = await chrome.tabs.query({ url: 'https://blog.naver.com/*' });
   const tab = tabs[0];
   if (!tab?.id) {
@@ -193,8 +206,7 @@ async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
       appError(ERR.EDITOR_NOT_FOUND, '네이버 글쓰기 탭을 찾지 못했어요. 글쓰기 페이지를 열어 주세요.'),
     );
   }
-  progress('insert', '에디터 탭으로 전달…', { percent: 35 });
-  const fwd: Msg<InsertStartReq> = { kind: 'cmd', name: 'insert.start', payload: req };
+  const fwd: Msg<T> = { kind: 'cmd', name, payload };
   try {
     return (await chrome.tabs.sendMessage(tab.id, fwd)) as Result<void>;
   } catch (e) {
