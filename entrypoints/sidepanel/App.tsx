@@ -1,6 +1,6 @@
 // Side Panel 메인 UI — 09 S0. M1: 단일 플로우(주제→생성→삽입→임시저장).
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { loadSettings, setDensityRange } from '@/components/settings';
 import type {
   DensityAnalyzeReq,
@@ -100,6 +100,7 @@ export function App() {
   const [densReport, setDensReport] = useState<DensityReport | null>(null);
   const [densMsg, setDensMsg] = useState('');
   const [visuals, setVisuals] = useState<Visual[]>([]); // ⑨ 생성된 비주얼(썸네일)
+  const [uploads, setUploads] = useState<Visual[]>([]); // ⑨ 사용자 업로드 이미지(UPLOAD 소스, WP4 A3)
   const [thumbUrls, setThumbUrls] = useState<string[]>([]); // 미리보기용 object URL
   const [imgInserting, setImgInserting] = useState<number | null>(null); // 수동 삽입 중인 썸네일 index
   const [imgMsg, setImgMsg] = useState(''); // 썸네일 삽입 결과 메시지
@@ -108,6 +109,8 @@ export function App() {
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
   const setMsgFor = (p: 'A' | 'B' | 'C', msg: string) => setMsgMap((m) => ({ ...m, [p]: msg }));
+  // 미리보기·삽입 대상 = 생성 썸네일 + 업로드 이미지(같은 Dexie ref·삽입 경로 공유).
+  const gallery = useMemo(() => [...visuals, ...uploads], [visuals, uploads]);
 
   // 저장된 권장 밀도 범위 불러오기(R-8.2).
   useEffect(() => {
@@ -140,17 +143,17 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // 용량 미터(WP5 5-3) — 마운트 시 + 비주얼 저장 후 갱신. 확장 origin 이라 Dexie 직접 조회.
+  // 용량 미터(WP5 5-3) — 마운트 시 + 비주얼/업로드 저장 후 갱신. 확장 origin 이라 Dexie 직접 조회.
   useEffect(() => {
     dexieRecordStore.estimateUsage().then(setStorageUsage).catch(() => setStorageUsage(null));
-  }, [visuals]);
+  }, [gallery]);
 
-  // ⑨ 비주얼 ref → 미리보기 object URL. visuals 바뀌면 재생성, 언마운트/교체 시 revoke.
+  // ⑨ 비주얼 ref → 미리보기 object URL. gallery 바뀌면 재생성, 언마운트/교체 시 revoke.
   useEffect(() => {
     let urls: string[] = [];
     let alive = true;
     Promise.all(
-      visuals.map((v) => (v.data.kind === 'ref' ? refToObjectUrl(v.data.id) : Promise.resolve(v.data.dataUrl))),
+      gallery.map((v) => (v.data.kind === 'ref' ? refToObjectUrl(v.data.id) : Promise.resolve(v.data.dataUrl))),
     ).then((list) => {
       if (!alive) {
         list.forEach((u) => u && URL.revokeObjectURL(u));
@@ -163,7 +166,7 @@ export function App() {
       alive = false;
       urls.forEach((u) => URL.revokeObjectURL(u));
     };
-  }, [visuals]);
+  }, [gallery]);
 
   // 키워드 검색: 검색량·경쟁도(A)와 연관 검색어(C)를 한 번에 수집해 같은 화면에 노출.
   async function onKeywordSearch() {
@@ -311,9 +314,29 @@ export function App() {
     // 성공 시 step.done 이벤트로 phase=done 처리.
   }
 
-  // ⑨ 수동 이미지 삽입: 고른 썸네일을 에디터 현재 커서에 넣는다(자동 삽입 안 함, 사용자 통제).
+  // ⑨ 사용자 업로드(UPLOAD 소스, WP4 A3): 고른 파일을 Dexie 에 저장해 삽입 풀에 추가.
+  // 생성 썸네일과 같은 ref·미리보기·삽입 경로를 공유한다(소스만 다르고 파이프라인 공통).
+  async function onUploadFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const added: Visual[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('image/')) continue; // 이미지 파일만
+      const id = crypto.randomUUID();
+      await dexieRecordStore.put({ id, blob: file, meta: { role: 'BODY_IMAGE', source: 'UPLOAD', name: file.name } });
+      added.push({
+        role: 'BODY_IMAGE',
+        source: 'UPLOAD',
+        data: { kind: 'ref', id },
+        dedupApplied: false, // 사용자 원본 그대로 — 중복 회피 미적용
+        h2Caption: file.name,
+      });
+    }
+    if (added.length) setUploads((prev) => [...prev, ...added]);
+  }
+
+  // ⑨ 수동 이미지 삽입: 고른 썸네일/업로드를 에디터 현재 커서에 넣는다(자동 삽입 안 함, 사용자 통제).
   async function onInsertImage(i: number) {
-    const v = visuals[i];
+    const v = gallery[i];
     if (!v || v.data.kind !== 'ref') return;
     setImgInserting(i);
     setImgMsg('이미지 삽입 중… (에디터에서 넣을 위치를 먼저 클릭하세요)');
@@ -666,19 +689,36 @@ export function App() {
           </div>
         </fieldset>
 
-        {/* ⑨ 비주얼 미리보기(WP4/WP8) — 생성된 썸네일. 자동 삽입 안 함, 골라서 커서에 수동 삽입. */}
+        {/* ⑨ 이미지 업로드(WP4 A3) — 사용자 파일을 삽입 풀에 추가. 생성 썸네일과 같은 그리드/삽입 경로. */}
+        <fieldset className="space-y-1 rounded border p-2">
+          <legend className="px-1 text-xs text-gray-500">이미지 업로드 (선택)</legend>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            className="block w-full text-xs file:mr-2 file:rounded file:border file:bg-gray-50 file:px-2 file:py-1 file:text-xs"
+            onChange={(e) => {
+              void onUploadFiles(e.target.files);
+              e.target.value = ''; // 같은 파일 재선택 허용
+            }}
+          />
+          <p className="text-[11px] text-gray-400">올린 이미지는 아래 그리드에서 골라 삽입합니다.</p>
+        </fieldset>
+
+        {/* ⑨ 비주얼 미리보기(WP4/WP8) — 생성 썸네일 + 업로드. 자동 삽입 안 함, 골라서 커서에 수동 삽입. */}
         {thumbUrls.length > 0 && (
           <fieldset className="space-y-2 rounded border p-2">
-            <legend className="px-1 text-xs text-gray-500">썸네일 ({thumbUrls.length}) · 골라서 삽입</legend>
+            <legend className="px-1 text-xs text-gray-500">이미지 ({thumbUrls.length}) · 골라서 삽입</legend>
             <p className="text-[11px] text-gray-400">
               에디터에서 넣을 위치를 클릭한 뒤 아래 “삽입”을 누르세요.
             </p>
             <div className="grid grid-cols-2 gap-2">
               {thumbUrls.map((url, i) => (
                 <figure key={url} className="overflow-hidden rounded border">
-                  <img src={url} alt={visuals[i]?.h2Caption ?? `썸네일 ${i + 1}`} className="w-full" />
+                  <img src={url} alt={gallery[i]?.h2Caption ?? `이미지 ${i + 1}`} className="w-full" />
                   <figcaption className="truncate px-1 pt-0.5 text-[10px] text-gray-500">
-                    {visuals[i]?.h2Caption ?? ''}
+                    {gallery[i]?.source === 'UPLOAD' ? '⬆ ' : ''}
+                    {gallery[i]?.h2Caption ?? ''}
                   </figcaption>
                   <button
                     className="w-full border-t py-1 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50"
