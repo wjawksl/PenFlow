@@ -1,5 +1,6 @@
 // Background (Service Worker) — 두뇌·라우터 — 05 §2. M1: ③ 생성 + ⑤ 저장 + ⑥⑦ 라우팅.
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
+import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
 import { extractH2Captions, generateBody } from '@/components/generator';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
@@ -22,6 +23,8 @@ import type {
   TopicCollectRes,
   VisualComposeReq,
   VisualComposeRes,
+  VisualFetchReq,
+  VisualFetchRes,
   VisualSpec,
 } from '@/lib/messaging';
 import type { AppError, Result } from '@/types/common';
@@ -56,6 +59,11 @@ export default defineBackground(() => {
       callOffscreen<ConvertReq, ConvertRes>('convert.htmlmd', msg.payload as ConvertReq).then(
         sendResponse,
       );
+      return true;
+    }
+    if (msg.name === 'visual.fetch') {
+      // ⑥ WP8: content script 가 ref 이미지 바이트 요청 → Dexie 읽어 dataUrl 반환.
+      handleVisualFetch(msg.payload as VisualFetchReq).then(sendResponse);
       return true;
     }
     if (msg.name === 'insert.start') {
@@ -142,6 +150,29 @@ async function buildVisuals(contentHtml: string, options: GenerateReq['options']
     return [];
   }
   return res.value.visuals;
+}
+
+// ⑥ WP8: ref 이미지 인출. content script 는 확장 IndexedDB 못 읽어 background 가 대신 읽어 dataUrl 전달.
+async function handleVisualFetch(req: VisualFetchReq): Promise<Result<VisualFetchRes>> {
+  const rec = await dexieRecordStore.get(req.id);
+  if (!rec) {
+    return failed(appError('VISUAL_NOT_FOUND', '삽입할 이미지를 찾지 못했어요. 다시 생성해 주세요.'));
+  }
+  return { ok: true, value: { dataUrl: await blobToDataUrl(rec.blob) } };
+}
+
+// SW 에는 FileReader 가 없다 → arrayBuffer + btoa 로 dataUrl 생성(청크 분할로 콜스택 보호).
+async function blobToDataUrl(blob: Blob | ArrayBuffer): Promise<string> {
+  const isBlob = blob instanceof Blob;
+  const buf = isBlob ? await blob.arrayBuffer() : blob;
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  const mime = isBlob && blob.type ? blob.type : 'image/jpeg';
+  return `data:${mime};base64,${btoa(bin)}`;
 }
 
 // ⑩ 키워드 밀도 검증(M3 WP2). 저장 본문에서 키워드 횟수·밀도 집계(경량, DOM 불필요).

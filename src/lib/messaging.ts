@@ -25,6 +25,7 @@ export type ChannelName =
   | 'topic.collect'
   | 'generate.run'
   | 'visual.compose'
+  | 'visual.fetch'
   | 'convert.htmlmd'
   | 'density.analyze'
   | 'insert.start'
@@ -79,6 +80,14 @@ export interface VisualComposeReq {
 export interface VisualComposeRes {
   visuals: Visual[];
 } // ⑨→④: 마커와 순서·개수 일치
+
+// ⑥ 삽입(WP8): content script(페이지 origin)는 Dexie 접근 불가 → ref 이미지를 background 경유로 인출.
+export interface VisualFetchReq {
+  id: string; // RecordStore(Dexie) 레코드 키
+}
+export interface VisualFetchRes {
+  dataUrl: string; // base64 dataUrl (메시지로 안전 전달)
+}
 
 export interface InsertStartReq {
   payloadId: string;
