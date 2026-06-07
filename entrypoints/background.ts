@@ -282,9 +282,10 @@ async function handleReferenceFetch(req: ReferenceFetchReq): Promise<Result<Refe
       direction: 'html2md',
       content: html,
     });
-    const text = (conv.ok ? conv.value.content : stripTags(html)).trim().slice(0, REFERENCE_MAX_CHARS);
+    const full = (conv.ok ? conv.value.content : stripTags(html)).trim();
+    const text = full.slice(0, REFERENCE_MAX_CHARS);
     if (!text) return failed(appError('REF_EMPTY', '링크에서 읽을 본문을 찾지 못했어요.'));
-    return { ok: true, value: { title, text } };
+    return { ok: true, value: { title, text, truncated: full.length > REFERENCE_MAX_CHARS } };
   } catch (e) {
     const aborted = e instanceof DOMException && e.name === 'AbortError';
     return failed(appError('REF_FETCH', aborted ? '링크 가져오기 시간 초과' : `링크 오류: ${String(e)}`));

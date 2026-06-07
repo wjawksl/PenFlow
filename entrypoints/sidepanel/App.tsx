@@ -13,6 +13,7 @@ import type {
   TopicCollectRes,
 } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
+import { extractFileText } from '@/components/reference/extract';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
 import { dexieRecordStore, refToObjectUrl } from '@/adapters/storage/record-store';
 import type { DensityReport, PayloadOptions, Topic, Visual } from '@/types/models';
@@ -30,22 +31,18 @@ const VERDICT: Record<'ok' | 'high' | 'low', { label: string; cls: string }> = {
 
 type Phase = 'idle' | 'generating' | 'generated' | 'inserting' | 'done' | 'error';
 
-// 참조 바구니 — 글 생성 시 [참고 자료] 로 합쳐지는 링크/첨부파일 한 건.
+// 참조 바구니 — 글 생성 시 [참고 자료] 로 합쳐지는 첨부파일/링크/텍스트 한 건.
 interface RefItem {
   id: string;
-  kind: 'link' | 'file';
-  label: string; // 링크=제목/주소, 파일=파일명
-  text: string; // 추출 본문
+  kind: 'link' | 'file' | 'text';
+  label: string; // 링크=제목/주소, 파일=파일명, 텍스트='붙여넣기'
+  text: string; // 추출/입력 본문(표시 한도로 잘린 값)
   status: 'loading' | 'ok' | 'error';
+  truncated?: boolean; // 한도 초과로 잘렸는지(안내용)
 }
 
-// 참조 1건당 본문 글자수 상한 — 프롬프트가 너무 커지지 않는 선에서 여유롭게.
+// 참조 1건당 본문 글자수 표시 한도 — 넘으면 잘리고 안내(중요한 내용만 텍스트로).
 const REF_MAX_CHARS = 50_000;
-
-// 텍스트로 읽을 수 있는 첨부만 본문 추출(바이너리 문서 파서는 후속).
-function isTextFile(file: File): boolean {
-  return file.type.startsWith('text/') || /\.(txt|md|markdown|csv|json|html?|xml|log|ya?ml)$/i.test(file.name);
-}
 
 // 부가요소(④) 입력 상태 — 09 S3. 켜진 항목만 마커 emit + 합성.
 interface Extras {
@@ -103,8 +100,9 @@ function buildOptions(e: Extras): PayloadOptions {
 export function App() {
   const [keyword, setKeyword] = useState('');
   const [promptBody, setPromptBody] = useState(DEFAULT_PROMPT.body);
-  const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(링크·첨부파일)
+  const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(첨부파일·링크·텍스트)
   const [refUrl, setRefUrl] = useState('');
+  const [refText, setRefText] = useState('');
   const [extras, setExtras] = useState<Extras>(EXTRAS_INIT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
@@ -281,34 +279,45 @@ export function App() {
       p.map((r) =>
         r.id === id
           ? res.ok
-            ? { ...r, label: res.value.title, text: res.value.text, status: 'ok' }
+            ? { ...r, label: res.value.title, text: res.value.text, status: 'ok', truncated: res.value.truncated }
             : { ...r, label: res.error.message, status: 'error' }
           : r,
       ),
     );
   }
 
-  // 참조 바구니: 첨부파일 추가 → 텍스트 파일이면 본문 읽기(사이드패널에서 File API 직접).
+  // 참조 바구니: 첨부파일 추가 → 형식별 본문 추출(텍스트·PDF·docx·hwpx, extract.ts).
   async function onAddFiles(files: FileList | null) {
     if (!files?.length) return;
     for (const file of Array.from(files)) {
       const id = crypto.randomUUID();
       setReferences((p) => [...p, { id, kind: 'file', label: file.name, text: '', status: 'loading' }]);
-      if (!isTextFile(file)) {
-        setReferences((p) =>
-          p.map((r) => (r.id === id ? { ...r, label: `${file.name} (텍스트 파일만 읽어요)`, status: 'error' } : r)),
-        );
+      const res = await extractFileText(file);
+      if (!res.ok || !res.text.trim()) {
+        const label = res.reason ? `${file.name} — ${res.reason}` : file.name;
+        setReferences((p) => p.map((r) => (r.id === id ? { ...r, label, status: 'error' } : r)));
         continue;
       }
-      try {
-        const text = (await file.text()).trim().slice(0, REF_MAX_CHARS);
-        setReferences((p) =>
-          p.map((r) => (r.id === id ? { ...r, text, status: text ? 'ok' : 'error' } : r)),
-        );
-      } catch {
-        setReferences((p) => p.map((r) => (r.id === id ? { ...r, status: 'error' } : r)));
-      }
+      const full = res.text.trim();
+      const text = full.slice(0, REF_MAX_CHARS);
+      setReferences((p) =>
+        p.map((r) =>
+          r.id === id ? { ...r, text, status: 'ok', truncated: full.length > REF_MAX_CHARS } : r,
+        ),
+      );
     }
+  }
+
+  // 참조 바구니: 텍스트 직접 붙여넣기(중요한 내용만 추려 넣을 때).
+  function onAddText() {
+    const full = refText.trim();
+    if (!full) return;
+    const text = full.slice(0, REF_MAX_CHARS);
+    setReferences((p) => [
+      ...p,
+      { id: crypto.randomUUID(), kind: 'text', label: '붙여넣기', text, status: 'ok', truncated: full.length > REF_MAX_CHARS },
+    ]);
+    setRefText('');
   }
 
   const onRemoveRef = (id: string) => setReferences((p) => p.filter((r) => r.id !== id));
@@ -317,9 +326,8 @@ export function App() {
   function buildReference(): string | undefined {
     const ready = references.filter((r) => r.status === 'ok' && r.text.trim());
     if (!ready.length) return undefined;
-    return ready
-      .map((r) => `## 참고(${r.kind === 'link' ? '링크' : '파일'}): ${r.label}\n${r.text}`)
-      .join('\n\n---\n\n');
+    const KIND = { link: '링크', file: '파일', text: '텍스트' } as const;
+    return ready.map((r) => `## 참고(${KIND[r.kind]}): ${r.label}\n${r.text}`).join('\n\n---\n\n');
   }
 
   async function onGenerate() {
@@ -550,19 +558,20 @@ export function App() {
         <fieldset className="space-y-3 rounded border p-2">
           <legend className="px-1 text-xs text-gray-500">참조 자료 (선택)</legend>
 
-          {/* 첨부파일 */}
+          {/* 첨부파일 — 텍스트·PDF·docx·hwpx 본문 추출 */}
           <div className="space-y-1">
             <label className="block text-[11px] font-medium text-gray-500">첨부파일</label>
             <input
               type="file"
               multiple
-              accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.xml,.log,.yaml,.yml,text/*"
+              accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.xml,.log,.yaml,.yml,.pdf,.docx,.hwpx,text/*,application/pdf"
               className="block w-full text-xs file:mr-2 file:rounded file:border file:bg-gray-50 file:px-2 file:py-1 file:text-xs"
               onChange={(e) => {
                 void onAddFiles(e.target.files);
                 e.target.value = ''; // 같은 파일 재선택 허용
               }}
             />
+            <p className="text-[10px] text-gray-400">PDF·Word(docx)·한글(hwpx)·텍스트 지원. 구버전 .hwp 는 PDF/hwpx 로 저장해 첨부.</p>
             <RefList items={references.filter((r) => r.kind === 'file')} onRemove={onRemoveRef} />
           </div>
 
@@ -590,6 +599,30 @@ export function App() {
             </div>
             <RefList items={references.filter((r) => r.kind === 'link')} onRemove={onRemoveRef} />
           </div>
+
+          {/* 텍스트 붙여넣기 — 한도 초과분이나 핵심만 직접 입력 */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-gray-500">텍스트 붙여넣기</label>
+            <textarea
+              className="h-16 w-full rounded border px-2 py-1 text-xs"
+              placeholder="참고할 내용을 직접 붙여넣기 (긴 자료는 핵심만)"
+              value={refText}
+              onChange={(e) => setRefText(e.target.value)}
+            />
+            <button
+              className="rounded border px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+              onClick={onAddText}
+              disabled={!refText.trim()}
+              type="button"
+            >
+              ＋ 텍스트 추가
+            </button>
+            <RefList items={references.filter((r) => r.kind === 'text')} onRemove={onRemoveRef} />
+          </div>
+
+          <p className="text-[10px] text-gray-400">
+            항목당 {REF_MAX_CHARS.toLocaleString()}자까지 반영돼요. 넘으면 잘리니 중요한 내용만 텍스트로 붙여넣으세요.
+          </p>
         </fieldset>
 
         {/* ⑩ 키워드 밀도(WP2) — 항상 표시(최소 크기→데이터 시 확장). 검사는 에디터 삽입 후(done)에만. R-8.2 */}
@@ -894,12 +927,22 @@ function RefList(props: { items: RefItem[]; onRemove: (id: string) => void }) {
     <ul className="space-y-1">
       {props.items.map((r) => (
         <li key={r.id} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
-          <span className="shrink-0 text-gray-400">{r.kind === 'link' ? '🔗' : '📄'}</span>
+          <span className="shrink-0 text-gray-400">
+            {r.kind === 'link' ? '🔗' : r.kind === 'file' ? '📄' : '📝'}
+          </span>
           <span className="min-w-0 flex-1 truncate" title={r.label}>
             {r.status === 'loading' ? '불러오는 중…' : r.label}
           </span>
-          <span className="shrink-0 text-[10px] text-gray-400">
-            {r.status === 'ok' ? `${r.text.length.toLocaleString()}자` : r.status === 'error' ? '실패' : ''}
+          <span className="shrink-0 text-[10px]">
+            {r.status === 'ok' ? (
+              <span className={r.truncated ? 'text-amber-600' : 'text-gray-400'}>
+                {r.text.length.toLocaleString()}자{r.truncated ? ' (잘림)' : ''}
+              </span>
+            ) : r.status === 'error' ? (
+              <span className="text-red-500">실패</span>
+            ) : (
+              ''
+            )}
           </span>
           <button
             className="shrink-0 text-gray-400 hover:text-red-500"

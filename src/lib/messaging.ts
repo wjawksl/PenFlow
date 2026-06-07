@@ -99,7 +99,8 @@ export interface ReferenceFetchReq {
 }
 export interface ReferenceFetchRes {
   title: string;
-  text: string; // 마크다운 추출 본문(프롬프트 [참고 자료] 로 합쳐짐)
+  text: string; // 마크다운 추출 본문(프롬프트 [참고 자료] 로 합쳐짐, 표시 한도로 잘린 값)
+  truncated: boolean; // 한도 초과로 잘렸는지(안내용)
 }
 
 export interface InsertStartReq {
