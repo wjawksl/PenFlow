@@ -1,14 +1,18 @@
-// ④ 합성 진입 전 정합성 검사 — 06 §6 / 16장 계약2. M2 범위.
-// M2 는 비주얼(이미지)이 없으므로 이미지 마커↔Visual 정합성(R-7.6)은 M3 로 미룬다.
-// 여기선 광고문구 누락 금지(R-3.4)와 마커 타입 유효성을 본다. 순서=큐순서는 scan() 이 보장.
+// ④ 합성 진입 전 정합성 검사 — 06 §6 / 16장 계약2.
+// 이미지는 opt-in(수동 삽입)으로 바뀌어 "이미지 마커↔Visual 강제차단"(R-7.6)은 폐기.
+// 남은 안전망: 광고문구 누락 금지(R-3.4) + 소제목↔썸네일 1:1(R-7.3, WP7). 순서=큐순서는 scan() 이 보장.
 import type { Marker } from '@/lib/markers';
 import { appError } from '@/lib/errors';
 import { ok, err, type Result } from '@/types/common';
 import type { PayloadOptions } from '@/types/models';
 
+const H2_RE = /<h2[^>]*>/gi;
+const countH2 = (html: string): number => (html.match(H2_RE) ?? []).length;
+
 export function validateComposition(
   markers: Marker[],
   options: PayloadOptions,
+  contentHtml = '',
 ): Result<void> {
   // R-3.4 — 광고/협찬 옵션 ON(adNotice 지정)이면 본문에 AD 마커가 1개 이상 있어야 한다.
   const adOptionOn = !!options.adNotice;
@@ -22,8 +26,22 @@ export function validateComposition(
       ),
     );
   }
+
+  // R-7.3 — 소제목 썸네일 옵션 ON 이면 <h2> 수와 H2THUMB 마커 수가 1:1 이어야 한다.
+  // injectH2ThumbMarkers 는 결정적이지만, 생성/편집 단계에서 어긋나면 여기서 차단(안전망).
+  if (options.h2Thumbnail) {
+    const h2Count = countH2(contentHtml);
+    const h2ThumbCount = markers.filter((m) => m.type === 'H2THUMB').length;
+    if (h2Count !== h2ThumbCount) {
+      return err(
+        appError(
+          'H2THUMB_MISMATCH',
+          `소제목(${h2Count}개)과 썸네일 마커(${h2ThumbCount}개) 수가 맞지 않아요. 합성을 중단합니다.`,
+          { failedStep: '정합성 검사' },
+        ),
+      );
+    }
+  }
+
   return ok(undefined);
 }
-
-// M3 에서 추가될 검사(자리표시): 이미지 마커 수 === Visual 수, H2 수 === H2THUMB 수.
-export const PENDING_M3_CHECKS = ['IMG/H2THUMB↔Visual 개수', 'H2↔H2THUMB 개수'] as const;

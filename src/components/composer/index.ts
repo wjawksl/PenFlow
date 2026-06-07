@@ -28,7 +28,7 @@ export function compose(
     raw: m[0],
   }));
 
-  const v = validateComposition(markers, options);
+  const v = validateComposition(markers, options, contentHtml);
   if (!v.ok) return v;
 
   const queue: InsertQueue = [];
