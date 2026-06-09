@@ -32,11 +32,13 @@ export async function waitForEl(
   }
 }
 
-/** 이 프레임(문서)에 편집기 본문이 있는지 — insert.start 라우팅 게이트용. */
+/** 이 프레임(문서)에 편집기 본문이 있는지 — insert.start 라우팅 게이트용.
+ * 실측: 본문은 mainFrame(.se-canvas), 제목은 그 안의 중첩 iframe(contenteditable 만 있고 canvas 없음).
+ * 아무 contenteditable 로 통과시키면 제목 프레임이 본문 삽입을 가로채므로 .se-canvas/.se-editing-area 로 한정. */
 export function hasEditorHere(): boolean {
   return !!(
     document.querySelector('.se-canvas') ||
-    document.querySelector('[contenteditable="true"]')
+    document.querySelector('.se-editing-area')
   );
 }
 

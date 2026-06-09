@@ -15,7 +15,9 @@ export default defineConfig({
     name: '펜플로우',
     // M1 범위: Side Panel(UI) + Background(두뇌) + Editor CS(삽입) — 05 §9.
     // offscreen: ⑨ Canvas 합성·⑩ DOM 변환을 화면 없는 문서에서 처리(05 §2, M3 WP0).
-    permissions: ['storage', 'sidePanel', 'scripting', 'tabs', 'offscreen'],
+    // webNavigation: 삽입 시 본문이 중첩 iframe(mainFrame) 안이라, 탭 브로드캐스트 대신
+    // 프레임별로 메시지를 보내려면 프레임 목록(getAllFrames)이 필요하다(forwardToEditor).
+    permissions: ['storage', 'sidePanel', 'scripting', 'tabs', 'offscreen', 'webNavigation'],
     // ② 주제 소스 — background fetch 로 CORS 회피(M2).
     // 검색광고(A)·블로그(B)·자동완성(C: 네이버/구글·유튜브).
     // 참조 바구니: 사용자가 넣는 임의 링크를 background 가 fetch → 본문 추출(참고자료).

@@ -323,20 +323,48 @@ async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
 }
 
 // 네이버 글쓰기 탭 content script 로 cmd 전달(본문 프레임이 응답). insert.start·image.insert 공용.
+// blog.naver.com 탭이 여러 개일 수 있다(글 보기 + 글쓰기) → 단순 tabs[0] 는 엉뚱한 보기 탭을 집는다.
+// 글쓰기 프레임(PostWriteForm)을 가진 탭만 고른다. 또 본문은 중첩 iframe(mainFrame) 안이라
+// 탭 전체 브로드캐스트는 top 프레임의 무응답(return false)이 먼저 undefined 로 resolve 돼 버린다
+// (Chrome tabs.sendMessage 멀티프레임 한계) → 프레임마다 개별 전송해 에디터 Result(ok)만 채택.
 async function forwardToEditor<T>(name: ChannelName, payload: T): Promise<Result<void>> {
   const tabs = await chrome.tabs.query({ url: 'https://blog.naver.com/*' });
-  const tab = tabs[0];
-  if (!tab?.id) {
+  let editorTabId: number | undefined;
+  let frames: chrome.webNavigation.GetAllFrameResultDetails[] = [];
+  for (const t of tabs) {
+    if (!t.id) continue;
+    const fs = (await chrome.webNavigation.getAllFrames({ tabId: t.id })) ?? [];
+    if (fs.some((f) => f.url.includes('PostWriteForm'))) {
+      editorTabId = t.id; // 글쓰기 프레임이 있는 탭 = 진짜 에디터 탭
+      frames = fs;
+      break;
+    }
+  }
+  if (editorTabId === undefined) {
     return failed(
-      appError(ERR.EDITOR_NOT_FOUND, '네이버 글쓰기 탭을 찾지 못했어요. 글쓰기 페이지를 열어 주세요.'),
+      appError(ERR.EDITOR_NOT_FOUND, '네이버 글쓰기 화면을 찾지 못했어요. 글쓰기 페이지를 열어 주세요.'),
     );
   }
   const fwd: Msg<T> = { kind: 'cmd', name, payload };
-  try {
-    return (await chrome.tabs.sendMessage(tab.id, fwd)) as Result<void>;
-  } catch (e) {
-    return failed(appError(ERR.INSERT_FAILED, `에디터 연결 실패: ${String(e)}`));
+  let lastError = '';
+  for (const frame of frames) {
+    try {
+      const res = (await chrome.tabs.sendMessage(editorTabId, fwd, { frameId: frame.frameId })) as
+        | Result<void>
+        | undefined;
+      // 에디터 프레임만 Result 를 돌려준다. 그 외 프레임은 무응답(undefined)이라 건너뛴다.
+      if (res && typeof (res as { ok?: unknown }).ok === 'boolean') return res;
+    } catch (e) {
+      lastError = String(e); // 리스너 없는 프레임 → "receiving end does not exist". 다음 프레임 시도.
+    }
   }
+  return failed(
+    appError(
+      ERR.EDITOR_NOT_FOUND,
+      '에디터 프레임을 찾지 못했어요. 글쓰기 페이지를 새로고침한 뒤 다시 시도해 주세요.',
+      lastError ? { failedStep: lastError } : undefined,
+    ),
+  );
 }
 
 function failed(error: AppError): Result<never> {
