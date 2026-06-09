@@ -2,9 +2,11 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-08 / 브랜치 `main` / HEAD `c7c816a`.
+마지막 갱신: 2026-06-09 / 브랜치 `main` / HEAD `5e76926`.
 
-> ⚠️ **미해결 블로커**: 사이드패널 cmd 에 background **NO_RESPONSE**(참조 링크 추가/생성 시 추정). 빌드 산출물(background.js 198KB, manifest 정상)은 OK → **로딩 환경 문제**로 봄. 의심: `npm run dev` 중 `npm run build` 동시 실행으로 `.output` 충돌(guide §3) 또는 `<all_urls>` 권한 변경 후 미재로드. **해결 절차**: dev 끄고 → `Remove-Item -Recurse -Force .output; npm run build` → 확장 **제거 후 재등록** → SW 콘솔 빨간 에러 확인(복구 안 되면 이 에러가 결정적). 코드 로드-크래시 요소는 안 보임.
+> ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
+>
+> ⚠️ **운영 주의**: 확장을 삭제·재등록하면 **열려있던 네이버 탭의 content script 가 죽는다(orphaned)** → 글쓰기 페이지를 **새로고침(F5)** 해야 CS 재주입됨. 권한(`webNavigation` 등) 바뀌면 제거 후 재등록 필요.
 
 ---
 
@@ -38,7 +40,16 @@
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
 
-### 2026-06-08 작업 (이번 세션)
+### 2026-06-09 작업 (이번 세션)
+
+1. **삽입 실패 근본 원인 2개 해결** (`5e76926`) — 증상은 삽입 시 "백그라운드 응답이 없어요"(= `forwardToEditor` 가 undefined 반환).
+   - **엉뚱한 탭 선택**: `forwardToEditor` 가 `tabs[0]` 사용 → 같이 열린 블로그 **글보기 탭**으로 메시지를 보냄(글쓰기 탭 아님). → `blog.naver.com/*` 탭들 중 **`PostWriteForm` 프레임을 가진 탭**(진짜 글쓰기 탭)을 골라 전송.
+   - **멀티프레임 race**: 본문이 중첩 `iframe[name=mainFrame]` 안 → `chrome.tabs.sendMessage(tabId)` 탭 브로드캐스트 시 **top 프레임의 `return false` 가 먼저 undefined 로 resolve** 돼 mainFrame 응답이 버려짐(Chrome 멀티프레임 한계). → `chrome.webNavigation.getAllFrames` 로 **프레임마다 개별 전송**(`{frameId}`), 에디터 프레임의 Result(`ok:boolean`)만 채택. `webNavigation` 권한 추가(`wxt.config.ts`).
+   - `hasEditorHere` 를 아무 `contenteditable` → **`.se-canvas`/`.se-editing-area`** 로 한정(`dom.ts`) — 제목용 중첩 프레임(`mainFrame>0`, contenteditable 있고 canvas 없음)이 본문 삽입을 가로채는 것 방지.
+   - 실측 프레임 구조: `top`(글쓰기 셸) → `mainFrame`(PostWriteForm, `.se-canvas` = **본문**) → `mainFrame>0`(제목용 중첩, contenteditable만).
+2. **참조 바구니 브라우저 실측 완료** — 링크·첨부·텍스트 정상 동작 확인(원래 블로커였던 항목).
+
+### 2026-06-08 작업 (이전 세션)
 
 0. **방향 전환 — 이미지 전략 재설정** (대화 결정, 코드 일부만 반영)
    - **UPLOAD 폐기**(`4aaf54f`): 사용자 업로드 이미지는 SE 에 직접 드롭하면 됨 → 풀 제거.
@@ -78,8 +89,9 @@
 - **단일 paste 안의 `<p>` 경계는 존중.** 연속 텍스트를 한 번에 paste 하면 SE 가 `<p>`별로 문단을 만든다(표는 별도 paste 해야 컴포넌트화). → `splitForSe`: 텍스트런 묶음 + 구조블록(table/ul/…) 분리.
 - **문단 첫머리가 볼드(heading/`<strong>`)면 그 볼드가 런 전체로 번지고 다음 문단까지 합쳐 먹는다.** → heading 을 **평문 `<p>`로 강등**(`demoteHeading`). 소제목 굵기는 포기(시각 구획은 H2 썸네일이 담당). paste 로 SE 에 볼드 넣는 길은 막혀 있음.
 - **이미지는 contenteditable(body) 밖 article 레벨 컴포넌트로 들어가고, 업로드 후에도 src 가 naver URL 이 아닐 수 있다.** → 완료 감지는 **에디터 문서 전체 `<img>` 개수 상대 증가**로 판정(`countEditorImages`). body 한정·url 필터는 무조건 타임아웃이었음.
-- **본문은 `iframe[name=mainFrame]` 안.** content script 를 `all_frames` 로 주입, 본문 프레임에서만 응답.
-- **제목은 contenteditable 밖 별도 컴포넌트.** 제목 span 클릭→중첩 iframe body 에 text/plain paste(`insertTitle`).
+- **본문은 `iframe[name=mainFrame]`(PostWriteForm) 안.** content script 를 `all_frames` 로 주입, 본문 프레임에서만 응답(`hasEditorHere` = `.se-canvas` 감지).
+- **제목은 contenteditable 밖 별도 컴포넌트.** 제목 span 클릭→중첩 iframe body 에 text/plain paste(`insertTitle`). 이 중첩 프레임(`mainFrame>0`)도 contenteditable 을 갖지만 `.se-canvas` 는 없음 → 본문 게이트에서 배제해야 함.
+- **삽입 라우팅(background→CS)은 탭·프레임을 정확히 찍어야 한다.** ① `blog.naver.com/*` 탭이 여러 개일 수 있어 `tabs[0]` 금지 → **`PostWriteForm` 프레임 가진 탭**만 선택. ② 본문이 중첩 iframe 이라 `tabs.sendMessage(tabId)` 브로드캐스트는 top 의 `return false` 가 먼저 undefined 로 resolve → **`getAllFrames` 로 프레임별 개별 전송**(`forwardToEditor`, `webNavigation` 권한).
 
 ---
 
@@ -109,14 +121,13 @@
 
 ## 다음 할 일 (우선순위 제안)
 
-0. **[블로커] background NO_RESPONSE 해결** — 위 상단 경고 절차. SW 콘솔 에러 확보가 먼저. 참조 바구니 실측은 이거 풀려야 가능.
-1. **참조 바구니 브라우저 실측** — 실파일(PDF/docx/hwpx) 추출, 링크 fetch, pdfjs 워커 확장 로드, 추출 품질·글 반영. hwpx 문단 태그(`hp:p`) 버전차 가능 → 안 나오면 조정.
-2. **Gemini 웹 반자동 스파이크** — `gemini.google.com` content script 주입, 프롬프트 입력·전송·결과 스크랩 PoC(DOM 덤프 실측). 깨지면 반자동(최종 전송만 사용자). 그 뒤 참조 바구니 이미지 첨부 → 이미지 생성 배선.
-3. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
-4. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
-5. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).
+1. **Gemini 웹 반자동 스파이크** — `gemini.google.com` content script 주입, 프롬프트 입력·전송·결과 스크랩 PoC(DOM 덤프 실측). 깨지면 반자동(최종 전송만 사용자). 그 뒤 참조 바구니 이미지 첨부 → 이미지 생성 배선.
+2. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
+3. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
+4. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).
 
-> 큰 그림: 이미지 전략을 **유료 API → Gemini 웹 반자동**으로 틀었고, **참조 바구니**가 글 생성·이미지 생성 공용 입력함이 됨. 지금은 **블로커(NO_RESPONSE)** 부터 풀어야 실측 가능.
+> ✅ 해소: 블로커(NO_RESPONSE) + 삽입 탭/프레임 오선택 + 참조 바구니 실측 모두 완료(2026-06-09).
+> 큰 그림: 이미지 전략을 **유료 API → Gemini 웹 반자동**으로 틀었고, **참조 바구니**가 글 생성·이미지 생성 공용 입력함이 됨. 다음은 **Gemini 웹 반자동 스파이크**.
 
 ---
 
