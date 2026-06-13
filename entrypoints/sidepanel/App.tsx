@@ -3,16 +3,20 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { loadSettings, setDensityRange } from '@/components/settings';
 import type {
+  ComposeThumbsReq,
   DensityAnalyzeReq,
   DensityAnalyzeRes,
   GeminiRunReq,
   GeminiRunRes,
   GenerateReq,
+  GenerateRunRes,
+  H2Section,
   ImageInsertReq,
   ReferenceFetchReq,
   ReferenceFetchRes,
   TopicCollectReq,
   TopicCollectRes,
+  VisualComposeRes,
 } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { extractFileText } from '@/components/reference/extract';
@@ -47,6 +51,7 @@ interface RefItem {
 const REF_MAX_CHARS = 50_000;
 
 // 부가요소(④) 입력 상태 — 09 S3. 켜진 항목만 마커 emit + 합성.
+// ⑨ 이미지는 부가요소에서 분리 — 생성 후 소제목을 골라 이미지 패널에서 만든다.
 interface Extras {
   adOn: boolean;
   adText: string;
@@ -57,10 +62,6 @@ interface Extras {
   backOn: boolean;
   backUrl: string;
   sourceOn: boolean;
-  thumbOn: boolean; // ⑨ 소제목(H2) 썸네일 자동 생성(R-7.3)
-  thumbSource: 'DEFAULT' | 'AI'; // 생성 방식: 기본 Canvas 카드 / AI 이미지(A3)
-  thumbBg: string; // 썸네일 배경색
-  thumbQuality: number; // JPEG 압축 품질 0~1(WP5 5-2)
 }
 const EXTRAS_INIT: Extras = {
   adOn: false,
@@ -72,11 +73,15 @@ const EXTRAS_INIT: Extras = {
   backOn: false,
   backUrl: '',
   sourceOn: false,
-  thumbOn: false,
-  thumbSource: 'DEFAULT',
-  thumbBg: '#1f2937',
-  thumbQuality: 0.85,
 };
+
+// ⑨ 이미지 생성 방식 — 기본 카드(Canvas) / Gemini 웹 반자동.
+type ImageMode = 'DEFAULT' | 'GEMINI';
+const THUMB_BG_INIT = '#1f2937';
+const THUMB_QUALITY_INIT = 0.85;
+// ⑨ Gemini 프롬프트에 넣는 소제목 본문 맥락 상한(글자). 요약 없이 전문을 넘기되,
+// 너무 길면 Quill 주입 신뢰도·이미지 품질이 떨어져 안전 상한에서 자른다(초과 시 패널에 표시).
+const GEMINI_CTX_MAX = 4000;
 
 // 배경 밝기에 따라 가독성 좋은 글자색 선택(흰/검).
 function pickFg(hex: string): string {
@@ -94,8 +99,6 @@ function buildOptions(e: Extras): PayloadOptions {
   if (e.shopOn && e.shopUrl.trim()) o.shoppingLink = { url: e.shopUrl.trim(), positions: [] };
   if (e.ctaOn && e.ctaText.trim()) o.ctaButton = `<a href="#">${e.ctaText.trim()}</a>`;
   if (e.backOn && e.backUrl.trim()) o.backlinkBlock = `<a href="${e.backUrl.trim()}">${e.backUrl.trim()}</a>`;
-  if (e.thumbOn)
-    o.h2Thumbnail = { bg: e.thumbBg, fg: pickFg(e.thumbBg), quality: e.thumbQuality, source: e.thumbSource };
   return o;
 }
 
@@ -127,10 +130,17 @@ export function App() {
   const [thumbUrls, setThumbUrls] = useState<string[]>([]); // 미리보기용 object URL
   const [imgInserting, setImgInserting] = useState<number | null>(null); // 수동 삽입 중인 썸네일 index
   const [imgMsg, setImgMsg] = useState(''); // 썸네일 삽입 결과 메시지
-  const [geminiPrompt, setGeminiPrompt] = useState(''); // ⑨ Gemini 웹 반자동 이미지 프롬프트
-  const [geminiBusy, setGeminiBusy] = useState(false); // Gemini 웹 생성 진행 중
-  const [geminiMsg, setGeminiMsg] = useState(''); // Gemini 웹 생성 안내/결과 메시지
+  // ⑨ 이미지 패널 — 생성 후 소제목을 골라 기본 카드/Gemini 웹으로 이미지 생성.
+  const [sections, setSections] = useState<H2Section[]>([]); // 생성 본문의 소제목 목록(캡션+맥락)
+  const [imgSel, setImgSel] = useState<Set<number>>(new Set()); // 선택한 소제목 인덱스(다중)
+  const [imgMode, setImgMode] = useState<ImageMode>('DEFAULT'); // 생성 방식
+  const [imgPrompt, setImgPrompt] = useState(''); // 추가 프롬프트(Gemini 방식)
+  const [thumbBg, setThumbBg] = useState(THUMB_BG_INIT); // 기본 카드 배경색
+  const [thumbQuality, setThumbQuality] = useState(THUMB_QUALITY_INIT); // 기본 카드 압축 품질
+  const [imgBusy, setImgBusy] = useState(false); // 이미지 생성 진행 중
+  const [imgProgress, setImgProgress] = useState(''); // 이미지 생성 진행/결과 메시지
   const [storageUsage, setStorageUsage] = useState<{ usage: number; quota: number } | null>(null); // 용량 미터(WP5 5-3)
+  const [hasPayload, setHasPayload] = useState(false); // 삽입 가능한 페이로드 존재 — 삽입 실패해도 버튼 유지(재시도)
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -338,6 +348,11 @@ export function App() {
   async function onGenerate() {
     setPhase('generating');
     setProgress('생성 중…');
+    setSections([]); // 재생성 → 이전 소제목/이미지 패널 초기화(실패해도 stale 패널 방지)
+    setVisuals([]);
+    setImgProgress('');
+    setHasPayload(false); // 새 생성 시작 → 이전 페이로드 무효(생성 실패 시 삽입 버튼 안 보이게)
+    payloadId.current = null;
     const req: GenerateReq = {
       topic: { id: crypto.randomUUID(), keyword },
       prompt: { name: DEFAULT_PROMPT.name, body: promptBody },
@@ -345,14 +360,20 @@ export function App() {
       method: 'direct',
       options: buildOptions(extras),
     };
-    const res = await sendCmd<GenerateReq, { payloadId: string; visuals: Visual[] }>('generate.run', req);
+    const res = await sendCmd<GenerateReq, GenerateRunRes>('generate.run', req);
     if (!res.ok) {
       setPhase('error');
       setProgress(res.error.message);
       return;
     }
     payloadId.current = res.value.payloadId;
-    setVisuals(res.value.visuals ?? []); // ⑨ 생성된 썸네일 미리보기
+    setHasPayload(true); // 삽입 가능 — 삽입 실패해도 버튼 유지(재시도, 재생성 불필요)
+    setVisuals(res.value.visuals ?? []); // ⑨ 새 본문 → 비주얼 초기화(이미지는 아래 패널에서 골라 생성)
+    // ⑨ 소제목 목록 → 이미지 패널. 기본 전체 선택(예전 일괄 동작 보존, 필요 시 해제).
+    const secs = res.value.sections ?? [];
+    setSections(secs);
+    setImgSel(new Set(secs.map((_, i) => i)));
+    setImgProgress('');
     setPhase('generated');
     setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
     setDensReport(null); // 새 본문 → 이전 밀도 결과 초기화(밀도 검사는 삽입 후)
@@ -413,24 +434,79 @@ export function App() {
     setImgMsg(res.ok ? `썸네일 ${i + 1} 삽입됨` : res.error.message);
   }
 
-  // ⑨ Gemini 웹 반자동 이미지 생성 — gemini.google.com 탭을 운전(반자동: 사용자가 전송).
-  // 결과 Visual(ref)을 visuals[]에 합류 → 위 썸네일 미리보기·삽입 경로를 그대로 탄다.
-  async function onGeminiGenerate() {
-    if (!geminiPrompt.trim() || geminiBusy) return;
-    setGeminiBusy(true);
-    setGeminiMsg('Gemini 탭에 프롬프트를 넣었어요. Gemini 화면에서 전송하면 자동으로 가져옵니다…');
-    const res = await sendCmd<GeminiRunReq, GeminiRunRes>('gemini.run', {
-      prompt: geminiPrompt.trim(),
-      autoSend: false, // 반자동 — 사용자가 Gemini 화면에서 최종 전송
-      role: 'BODY_IMAGE',
+  // ⑨ 소제목 선택 토글 / 전체 선택.
+  const toggleSel = (i: number) =>
+    setImgSel((p) => {
+      const n = new Set(p);
+      if (n.has(i)) n.delete(i);
+      else n.add(i);
+      return n;
     });
-    setGeminiBusy(false);
-    if (res.ok) {
-      setVisuals((prev) => [...prev, res.value.visual]); // 삽입경로 합류
-      setGeminiMsg('이미지를 가져왔어요. 아래 썸네일에서 골라 삽입하세요.');
+  const toggleSelAll = () =>
+    setImgSel((p) => (p.size === sections.length ? new Set() : new Set(sections.map((_, i) => i))));
+
+  // ⑨ Gemini 프롬프트 — 선택 소제목의 본문 전문(요약 안 함)을 맥락으로 넘긴다.
+  // 이미지 모델은 긴 산문을 잘 못 다루므로 '무엇을 그릴지' 지시를 앞에 명확히 두고 본문은 뒤에 붙인다.
+  // 본문이 매우 길면 Quill 주입·이미지 품질 보호를 위해 GEMINI_CTX_MAX 까지만(초과분은 잘림).
+  function buildGeminiPrompt(s: H2Section): string {
+    const body = s.text.slice(0, GEMINI_CTX_MAX);
+    const extra = imgPrompt.trim();
+    const lines = [
+      `다음은 한국어 블로그 글의 한 섹션이야. 소제목: "${s.caption}".`,
+      '이 섹션 본문 내용을 가장 잘 표현하는 일러스트/썸네일 이미지 1장을 만들어줘.',
+      '조건: 이미지 안에 글자·텍스트는 넣지 말 것, 단순하고 밝은 배경, 가로형.',
+    ];
+    if (extra) lines.push(`추가 요청: ${extra}`);
+    lines.push('', '[섹션 본문]', body);
+    return lines.join('\n');
+  }
+
+  // ⑨ 선택한 소제목으로 이미지 생성. 결과 Visual 은 visuals[]에 합류 → 기존 미리보기·수동 삽입 경로 재사용.
+  // 기본 카드: 한 번에 일괄(Canvas). Gemini 웹: 반자동이라 소제목마다 사용자가 전송 → 순차 1개씩 처리.
+  async function onComposeImages() {
+    if (imgBusy || imgSel.size === 0) return;
+    const picked = [...imgSel].sort((a, b) => a - b);
+    setImgBusy(true);
+    setImgMsg('');
+
+    if (imgMode === 'DEFAULT') {
+      setImgProgress(`기본 카드 ${picked.length}개 생성 중…`);
+      const res = await sendCmd<ComposeThumbsReq, VisualComposeRes>('visual.composeSelected', {
+        captions: picked.map((i) => sections[i]!.caption),
+        style: { bg: thumbBg, fg: pickFg(thumbBg) },
+        quality: thumbQuality,
+      });
+      if (res.ok) {
+        setVisuals((prev) => [...prev, ...res.value.visuals]);
+        setImgProgress(`기본 카드 ${res.value.visuals.length}개 생성됨. 아래에서 골라 삽입하세요.`);
+      } else {
+        setImgProgress(res.error.message);
+      }
     } else {
-      setGeminiMsg(res.error.message);
+      // Gemini 웹 — 순차 1개씩. 각 소제목마다 Gemini 화면에서 사용자가 직접 전송해야 한다(반자동).
+      let done = 0;
+      const fails: string[] = [];
+      for (let n = 0; n < picked.length; n++) {
+        const s = sections[picked[n]!]!;
+        setImgProgress(`Gemini ${n + 1}/${picked.length} — "${s.caption}" : Gemini 화면에서 전송하세요…`);
+        const res = await sendCmd<GeminiRunReq, GeminiRunRes>('gemini.run', {
+          prompt: buildGeminiPrompt(s),
+          autoSend: false, // 반자동 — 사용자가 Gemini 화면에서 최종 전송
+          role: 'H2_THUMB',
+          h2Caption: s.caption,
+        });
+        if (res.ok) {
+          setVisuals((prev) => [...prev, res.value.visual]);
+          done++;
+        } else {
+          fails.push(`${s.caption}: ${res.error.message}`);
+        }
+      }
+      setImgProgress(
+        `Gemini 완료 — 성공 ${done}/${picked.length}${fails.length ? ` · 실패: ${fails.join(' / ')}` : ''}`,
+      );
     }
+    setImgBusy(false);
   }
 
   const busy = phase === 'generating' || phase === 'inserting';
@@ -804,104 +880,138 @@ export function App() {
             />
             출처 링크 포함
           </label>
+        </fieldset>
 
-          {/* ⑨ 소제목 썸네일(WP4) — 소제목 수만큼 배경+텍스트 카드 자동 생성(R-7.3) */}
-          <div className="space-y-1">
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={extras.thumbOn}
-                onChange={(e) => setExtras((s) => ({ ...s, thumbOn: e.target.checked }))}
-              />
-              소제목 썸네일 자동 생성
-            </label>
-            {extras.thumbOn && (
-              <div className="space-y-1.5">
-                {/* 생성 방식(A3) — 기본 카드(Canvas) / AI 이미지(Gemini, 설정 키 필요). */}
-                <div className="flex items-center gap-3 text-xs text-gray-500">
-                  <span className="shrink-0">방식</span>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="radio"
-                      name="thumbSource"
-                      checked={extras.thumbSource === 'DEFAULT'}
-                      onChange={() => setExtras((s) => ({ ...s, thumbSource: 'DEFAULT' }))}
-                    />
-                    기본 카드
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="radio"
-                      name="thumbSource"
-                      checked={extras.thumbSource === 'AI'}
-                      onChange={() => setExtras((s) => ({ ...s, thumbSource: 'AI' }))}
-                    />
-                    AI 이미지
-                  </label>
-                </div>
-                {extras.thumbSource === 'AI' ? (
-                  <p className="text-[11px] text-gray-400">
-                    설정의 AI 이미지 키로 소제목마다 일러스트를 생성합니다. 키가 없으면 기본 카드로 만듭니다.
-                  </p>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 text-xs text-gray-500">
-                      <span>배경색</span>
+        {/* ⑨ 이미지 — 생성 후 소제목을 골라 기본 카드/Gemini 웹으로 생성. 결과는 아래 썸네일에 합류. */}
+        {sections.length > 0 && (
+          <fieldset className="space-y-2 rounded border p-2">
+            <legend className="px-1 text-xs text-gray-500">🖼 이미지 (소제목 선택)</legend>
+
+            {/* 방식 — 기본 카드(Canvas) / Gemini 웹(반자동) */}
+            <div className="flex items-center gap-3 text-xs text-gray-500">
+              <span className="shrink-0">방식</span>
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="imgMode"
+                  checked={imgMode === 'DEFAULT'}
+                  onChange={() => setImgMode('DEFAULT')}
+                />
+                기본 카드
+              </label>
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="imgMode"
+                  checked={imgMode === 'GEMINI'}
+                  onChange={() => setImgMode('GEMINI')}
+                />
+                Gemini 웹(반자동)
+              </label>
+            </div>
+
+            {/* 소제목 다중 선택 */}
+            <div className="rounded border">
+              <label className="flex items-center gap-2 border-b bg-gray-50 px-2 py-1 text-xs font-medium text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={sections.length > 0 && imgSel.size === sections.length}
+                  ref={(el) => {
+                    if (el) el.indeterminate = imgSel.size > 0 && imgSel.size < sections.length;
+                  }}
+                  onChange={toggleSelAll}
+                />
+                전체 선택 ({imgSel.size}/{sections.length})
+              </label>
+              <ul className="max-h-40 overflow-y-auto">
+                {sections.map((s, i) => (
+                  <li key={i}>
+                    <label className="flex items-start gap-2 px-2 py-1 text-xs hover:bg-gray-50">
                       <input
-                        type="color"
-                        className="h-6 w-10 rounded border"
-                        value={extras.thumbBg}
-                        onChange={(e) => setExtras((s) => ({ ...s, thumbBg: e.target.value }))}
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={imgSel.has(i)}
+                        onChange={() => toggleSel(i)}
                       />
-                      <span className="text-[11px] text-gray-400">소제목 개수만큼 1:1 생성</span>
-                    </div>
-                    {/* 압축 품질(WP5 5-2) — 낮을수록 용량↓·화질↓. 중복 회피 노이즈는 항상 적용(R-7.4). */}
-                    <div className="flex items-center gap-2 text-xs text-gray-500">
-                      <span className="shrink-0">압축 품질</span>
-                      <input
-                        type="range"
-                        min={0.3}
-                        max={1}
-                        step={0.05}
-                        value={extras.thumbQuality}
-                        onChange={(e) => setExtras((s) => ({ ...s, thumbQuality: Number(e.target.value) }))}
-                        className="flex-1"
-                      />
-                      <span className="w-8 shrink-0 text-right tabular-nums">
-                        {Math.round(extras.thumbQuality * 100)}%
+                      <span className="min-w-0 flex-1">
+                        <span className="text-gray-400">{i + 1}.</span> {s.caption}
+                        <span className="ml-1 text-[10px] text-gray-400">
+                          (본문 {s.text.length.toLocaleString()}자
+                          {imgMode === 'GEMINI' && s.text.length > GEMINI_CTX_MAX
+                            ? ` · ${GEMINI_CTX_MAX.toLocaleString()}자까지만 전달`
+                            : ''}
+                          )
+                        </span>
                       </span>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </fieldset>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-        {/* ⑨ Gemini 웹 반자동 이미지 생성 — 무료 웹 세션 운전(API 폐기 대체). 결과는 아래 썸네일에 합류. */}
-        <fieldset className="space-y-2 rounded border p-2">
-          <legend className="px-1 text-xs text-gray-500">Gemini 웹 이미지(반자동)</legend>
-          <p className="text-[11px] text-gray-400">
-            gemini.google.com 에 로그인한 탭을 열어 두세요. 프롬프트를 넣어 두면 Gemini 화면에서 직접 전송 →
-            생성되면 자동으로 가져옵니다.
-          </p>
-          <textarea
-            className="w-full resize-y rounded border p-2 text-xs"
-            rows={2}
-            placeholder="예) 밝고 단순한 고양이 일러스트, 텍스트 없이, 가로형"
-            value={geminiPrompt}
-            onChange={(e) => setGeminiPrompt(e.target.value)}
-          />
-          <button
-            className="w-full rounded bg-gray-900 py-1.5 text-xs text-white disabled:opacity-50"
-            onClick={onGeminiGenerate}
-            disabled={geminiBusy || !geminiPrompt.trim()}
-            type="button"
-          >
-            {geminiBusy ? '생성 대기 중… (Gemini에서 전송하세요)' : '🎨 Gemini 웹으로 생성'}
-          </button>
-          {geminiMsg && <p className="text-xs text-gray-500">{geminiMsg}</p>}
-        </fieldset>
+            {imgMode === 'GEMINI' ? (
+              <>
+                <p className="text-[11px] text-gray-400">
+                  gemini.google.com 에 로그인한 탭을 열어 두세요. 선택한 소제목의 <b>본문 전문</b>(최대{' '}
+                  {GEMINI_CTX_MAX.toLocaleString()}자)이 맥락으로 함께 전달됩니다. 소제목마다 Gemini 화면에서
+                  직접 전송 → 자동으로 가져옵니다(한 번에 하나씩).
+                </p>
+                <textarea
+                  className="w-full resize-y rounded border p-2 text-xs"
+                  rows={2}
+                  placeholder="추가 프롬프트(선택) — 예) 파스텔톤, 미니멀 / 소제목 맥락은 자동 첨부"
+                  value={imgPrompt}
+                  onChange={(e) => setImgPrompt(e.target.value)}
+                />
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>배경색</span>
+                  <input
+                    type="color"
+                    className="h-6 w-10 rounded border"
+                    value={thumbBg}
+                    onChange={(e) => setThumbBg(e.target.value)}
+                  />
+                  <span className="text-[11px] text-gray-400">선택 소제목 개수만큼 1:1 카드 생성</span>
+                </div>
+                {/* 압축 품질(WP5 5-2) — 낮을수록 용량↓·화질↓. 중복 회피 노이즈는 항상 적용(R-7.4). */}
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span className="shrink-0">압축 품질</span>
+                  <input
+                    type="range"
+                    min={0.3}
+                    max={1}
+                    step={0.05}
+                    value={thumbQuality}
+                    onChange={(e) => setThumbQuality(Number(e.target.value))}
+                    className="flex-1"
+                  />
+                  <span className="w-8 shrink-0 text-right tabular-nums">
+                    {Math.round(thumbQuality * 100)}%
+                  </span>
+                </div>
+              </>
+            )}
+
+            <button
+              className="w-full rounded bg-gray-900 py-1.5 text-xs text-white disabled:opacity-50"
+              onClick={onComposeImages}
+              disabled={imgBusy || imgSel.size === 0}
+              type="button"
+            >
+              {imgBusy
+                ? imgMode === 'GEMINI'
+                  ? '생성 중… (Gemini에서 전송하세요)'
+                  : '생성 중…'
+                : imgMode === 'GEMINI'
+                  ? `🎨 선택한 ${imgSel.size}개 Gemini로 생성`
+                  : `🖼 선택한 ${imgSel.size}개 카드 생성`}
+            </button>
+            {imgProgress && <p className="text-xs text-gray-500">{imgProgress}</p>}
+          </fieldset>
+        )}
 
         {/* ⑨ 비주얼 미리보기(WP4/WP8) — 생성 썸네일. 자동 삽입 안 함, 골라서 커서에 수동 삽입. */}
         {thumbUrls.length > 0 && (
@@ -945,14 +1055,19 @@ export function App() {
         >
           {phase === 'generating' ? '생성 중…' : '✍ API 글 생성'}
         </button>
-        {(phase === 'generated' || phase === 'inserting' || phase === 'done') && (
+        {/* 삽입 버튼 — 페이로드가 있는 한 유지(삽입 실패해도 사라지지 않음, 재생성 없이 재시도). */}
+        {hasPayload && phase !== 'generating' && (
           <button
             className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
             onClick={onInsert}
-            disabled={busy}
+            disabled={phase === 'inserting'}
             type="button"
           >
-            {phase === 'inserting' ? '삽입 중…' : '네이버 에디터에 삽입 (임시저장)'}
+            {phase === 'inserting'
+              ? '삽입 중…'
+              : phase === 'error'
+                ? '↻ 다시 삽입 (임시저장)'
+                : '네이버 에디터에 삽입 (임시저장)'}
           </button>
         )}
       </div>

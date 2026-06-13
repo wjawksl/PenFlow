@@ -25,6 +25,7 @@ export type ChannelName =
   | 'topic.collect'
   | 'generate.run'
   | 'visual.compose'
+  | 'visual.composeSelected'
   | 'visual.fetch'
   | 'gemini.run'
   | 'reference.fetch'
@@ -56,6 +57,18 @@ export interface GenerateRes {
   contentHtml: string;
 } // ③→⑩: 약속된 마커 포함
 
+// ⑨ 소제목 1건 = 캡션 + 해당 섹션 본문 발췌. 생성 후 이미지 패널의 소제목 선택·맥락 동반에 쓰인다.
+export interface H2Section {
+  caption: string; // 소제목 텍스트
+  text: string; // 다음 소제목 전까지 본문(태그·마커 제거, Gemini 프롬프트 맥락용)
+}
+// generate.run 응답(05 §3): 페이로드 id + (생성 시점엔 비어있는) 비주얼 + 소제목 목록.
+export interface GenerateRunRes {
+  payloadId: string;
+  visuals: Visual[];
+  sections: H2Section[]; // ⑨ 이미지 패널이 소제목별로 골라 생성하도록 동반
+}
+
 export interface ConvertReq {
   direction: 'html2md' | 'md2html';
   content: string;
@@ -85,6 +98,13 @@ export interface VisualComposeReq {
 export interface VisualComposeRes {
   visuals: Visual[];
 } // ⑨→④: 마커와 순서·개수 일치
+
+// ⑨ 사이드패널→BG: 생성 후 사용자가 고른 소제목들로 기본 카드(Canvas) 썸네일 합성. BG가 offscreen 위임.
+export interface ComposeThumbsReq {
+  captions: string[]; // 선택한 소제목 캡션들
+  style: { bg: string; fg: string }; // 배경·글자색
+  quality: number; // JPEG 압축 품질 0~1(WP5 5-2)
+}
 
 // ⑥ 삽입(WP8): content script(페이지 origin)는 Dexie 접근 불가 → ref 이미지를 background 경유로 인출.
 export interface VisualFetchReq {

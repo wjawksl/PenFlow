@@ -30,7 +30,7 @@
 | WP1 | HTML↔MD 변환(marked/turndown), 마커 보존, SmartEditor 제목 입력 | ✅ |
 | WP2 | 키워드 밀도(경량 카운트, Kiwi 형태소는 보류) + 자동 검사 UI | ✅ |
 | WP3 | ~~찾기·바꾸기~~ | ❌ 제거(에디터 기본 기능과 중복) |
-| WP4 | ⑨ 비주얼 생성 — H2 썸네일(기본 Canvas + AI Gemini) | 🟡 A3(소스: 기본·AI ✅, UPLOAD 제거 / H1 대표·본문 IMG 슬롯 ⬜) |
+| WP4 | ⑨ 비주얼 생성 — H2 썸네일(기본 Canvas + Gemini 웹) | 🟡 소제목 **선택식 이미지 패널 통합 완료**(기본카드/Gemini 웹, 생성 후 골라서) / H1 대표·본문 IMG 슬롯 ⬜ |
 | WP5 | ⑨ 중복 회피(1px 노이즈) + 압축(품질 슬라이더) + 용량 미터 | ✅ |
 | WP6 | ⑨ 모델/캐릭터 일관성(참조 이미지 동반) | ⬜ |
 | WP7 | 정합성 확장(`validate.ts` H2↔H2THUMB) | ✅ 축소판(R-7.3 안전망만, 이미지 opt-in 으로 R-7.6 폐기) |
@@ -40,7 +40,27 @@
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
 
-### 2026-06-11~12 작업 (Gemini 웹 반자동 — 이번 세션)
+### 2026-06-13 작업 (이미지 생성 UX 통합 — 이번 세션)
+
+⑨ 이미지 진입점을 **하나로 통합**. 기존엔 (1) 부가요소의 "소제목 썸네일 자동 생성"(전체 H2 일괄) + (2) 별도 "Gemini 웹 이미지"(자유 프롬프트 1장)로 **갈라져** 있었음. → **생성 후 단일 "🖼 이미지 (소제목 선택)" 패널**로 합침.
+
+1. **타이밍 전환** — 이미지 생성을 본문 생성 *시점*에서 떼어 **생성 후 단계**로. 소제목 목록(H2)이 있어야 "골라서"가 가능하기 때문. `handleGenerate` 가 더는 썸네일을 만들지 않고(`buildVisuals`/`buildAiThumbnails`/`thumbPrompt`/유료 `geminiImageAdapter` 경로 **삭제**), 대신 `extractH2Sections`(신규: 캡션+섹션 본문)로 **소제목 목록을 응답**(`GenerateRunRes{payloadId,visuals:[],sections}`).
+2. **소제목 다중 선택 + 방식 토글** — 패널에서 소제목 체크(전체 선택 포함) → 방식 **기본 카드(Canvas) / Gemini 웹(반자동)**.
+   - 기본 카드: 선택 캡션 → `visual.composeSelected`(신규 채널) → BG `handleComposeThumbs` → offscreen `visual.compose` 일괄. 배경색·압축품질은 패널 로컬 상태로 이전.
+   - Gemini 웹: **순차 1개씩**(반자동이라 소제목마다 사용자가 Gemini 화면에서 전송). 프롬프트 = 소제목+섹션 맥락(300자)+사용자 추가프롬프트. 진행 "2/3" 표시. 기존 `gemini.run` 을 `role:'H2_THUMB',h2Caption` 로 루프 호출.
+3. **합류·삽입 경로 무변경** — 결과 Visual 은 기존 `visuals[]` → 썸네일 그리드 → 커서 수동 삽입 그대로.
+4. **마커 decouple** — 생성 시 `h2Thumbnail` 옵션을 안 켜므로 `injectH2ThumbMarkers` 비활성 → composer/validate 의 H2THUMB 1:1 부담 자연 소멸(R-7.6 폐기 연장선, opt-in·수동삽입이라 안전).
+5. 핵심 파일: `App.tsx`(이미지 패널), `background.ts`(`handleComposeThumbs`, `handleGenerate` 정리), `generator/index.ts`(`extractH2Sections`), `messaging.ts`(`visual.composeSelected`/`ComposeThumbsReq`/`H2Section`/`GenerateRunRes`). 검증: tsc 0, 테스트 74 pass(`extractH2Sections` 케이스 추가), prod 빌드 OK.
+
+6. **삽입 라우팅 견고화**(`forwardToEditor`) — 에디터 탭/프레임 선택이 `url.includes('PostWriteForm')` **문자열 한 줄에 의존**해, 네이버가 에디터 iframe 주소를 바꾸거나 탭 상태가 어긋나면 "글쓰기 화면을 찾지 못했어요"로 전부 막혔음. → **모든 `blog.naver.com` 탭의 모든 프레임에 프레임별 전송 → `hasEditorHere`(`.se-canvas`)로 에디터 프레임만 Result 응답**하는 방식으로 변경(URL 문자열 비의존). 에러도 3분기로 구분: 탭 없음 / CS 끊김(F5 안내) / 본문영역 없음(SmartEditor 아님). `reached` 플래그(프레임이 응답했나)로 orphaned 여부 판별.
+
+7. **삽입 실패 시 임시저장 버튼 유지** — 버튼 노출 조건이 `phase==='generated'|'inserting'|'done'` 이라 삽입 실패(`phase='error'`)면 버튼이 사라져 **매 실패마다 글을 새로 생성**해야 했음. → `hasPayload` 상태 도입(생성 성공 시 true, 새 생성 시작 시 false). 버튼 조건을 `hasPayload && phase!=='generating'` 으로 바꿔 **실패해도 버튼 유지·재시도**(라벨 "↻ 다시 삽입"). `payloadId.current` 도 생성 시작 시 null 로 비워 생성 실패 시엔 버튼 안 뜨게.
+
+8. **Gemini 이미지 프롬프트 = 소제목 본문 전문 전달** — 기존 `buildGeminiPrompt` 가 `s.text.slice(0,300)`(앞 300자 절단)만 넘겨 맥락이 빈약했음. → **본문 전문**을 넘기도록 변경(`GEMINI_CTX_MAX`=4,000자 안전 상한까지, `extractH2Sections` 가 이미 소제목 사이 전문을 뽑아둠). 프롬프트 구조도 이미지 모델 친화적으로: **지시(무엇을 그릴지)를 앞, `[섹션 본문]`을 뒤**. 패널 소제목 행에 `(본문 N자)` + 상한 초과 시 경고 표시. ⚠️ **알려진 위험**(미해결, 길어지면 발현): (1) **Quill 주입 신뢰도** — `setPrompt`(gemini.content.ts)의 `paste→textContent.includes(text) 검증→폴백`이 긴 본문에서 Quill 재구성으로 검증 실패해 부분만 들어갈 수 있음(짧은 프롬프트만 라이브 검증됨). (2) **이미지 모델은 장문 이해 약함** → 전문 전달은 충실도↑ vs 이미지 품질↓ 트레이드오프. (3) 표·리스트가 평문으로 뭉개짐(노이즈). 대응 후보: `setPrompt` 견고화 / 본문을 요약·첨부로 동반(WP6 연계).
+
+> ⚠️ **참고**: 부가요소 fieldset 에서 썸네일 블록 제거, 별도 Gemini fieldset 제거. `settings.aiImageCredential`/`gemini-image.ts`(유료 API)는 이제 어디서도 호출 안 함(파일은 잔존, 사실상 죽은 코드).
+
+### 2026-06-11~12 작업 (Gemini 웹 반자동 — 이전 세션)
 
 ⑨ 이미지 전략 = **Gemini 웹 반자동**(유료 API 폐기 대체) 스파이크 → 동작 + 삽입경로 합류까지 배선. 상세: `docs/manual/milestone/M3-Gemini스파이크.md`.
 
@@ -111,7 +131,7 @@
 - **이미지는 contenteditable(body) 밖 article 레벨 컴포넌트로 들어가고, 업로드 후에도 src 가 naver URL 이 아닐 수 있다.** → 완료 감지는 **에디터 문서 전체 `<img>` 개수 상대 증가**로 판정(`countEditorImages`). body 한정·url 필터는 무조건 타임아웃이었음.
 - **본문은 `iframe[name=mainFrame]`(PostWriteForm) 안.** content script 를 `all_frames` 로 주입, 본문 프레임에서만 응답(`hasEditorHere` = `.se-canvas` 감지).
 - **제목은 contenteditable 밖 별도 컴포넌트.** 제목 span 클릭→중첩 iframe body 에 text/plain paste(`insertTitle`). 이 중첩 프레임(`mainFrame>0`)도 contenteditable 을 갖지만 `.se-canvas` 는 없음 → 본문 게이트에서 배제해야 함.
-- **삽입 라우팅(background→CS)은 탭·프레임을 정확히 찍어야 한다.** ① `blog.naver.com/*` 탭이 여러 개일 수 있어 `tabs[0]` 금지 → **`PostWriteForm` 프레임 가진 탭**만 선택. ② 본문이 중첩 iframe 이라 `tabs.sendMessage(tabId)` 브로드캐스트는 top 의 `return false` 가 먼저 undefined 로 resolve → **`getAllFrames` 로 프레임별 개별 전송**(`forwardToEditor`, `webNavigation` 권한).
+- **삽입 라우팅(background→CS)은 탭·프레임을 정확히 찍어야 한다.** 본문이 중첩 iframe 이라 `tabs.sendMessage(tabId)` 브로드캐스트는 top 의 `return false` 가 먼저 undefined 로 resolve → **`getAllFrames` 로 프레임별 개별 전송**(`forwardToEditor`, `webNavigation` 권한). ⚠️ **2026-06-13 변경**: 예전엔 `PostWriteForm` URL 가진 탭만 골랐으나(네이버 주소 변경에 취약) → **모든 `blog.naver.com` 탭의 모든 프레임에 보내고 `hasEditorHere`(`.se-canvas`)로 에디터 프레임만 응답**하게 일반화. URL 문자열 비의존. 보기 탭 등 비에디터 프레임은 응답 안 해 자연 배제.
 
 ---
 
@@ -145,7 +165,8 @@
 ## 다음 할 일 (우선순위 제안)
 
 1. **Gemini 웹 반자동 스파이크** ✅ 동작 확인 — 라이브 검증 통과: 입력 주입(#2/#8 격리월드 OK), blob 스크랩(#5/#9), 완료 판정(#4). **삽입경로 합류까지 배선 완료**: 사이드패널 "Gemini 웹 이미지(반자동)" 블록(프롬프트+버튼) → `gemini.run` → BG `handleGeminiRun`(CS 운전 → dataUrl → `dexieRecordStore.put` → `Visual{role,source:'AI',data:{kind:'ref',id}}`) → 사이드패널 `visuals[]` 합류 → 썸네일 미리보기 → 기존 `image.insert` 커서 삽입. 완료 신호는 img `loaded` 클래스(주의: `image-loading-overlay` 는 완료 후에도 DOM 잔존 → 존재 여부로 판정 금지). 핵심 파일: `entrypoints/gemini.content.ts`, `forwardToGemini`/`handleGeminiRun`(background), `GEMINI`/`GEMINI_DEFAULTS`(selectors).
-   - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단, autoSend 자동전송 쓸 때만 실측 필요). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7). H2 썸네일 루프에 Gemini 웹 소스 연결은 반자동 특성상 캡션당 사용자 전송 필요 — UX 검토 후.
+   - ✅ **소제목 선택식 패널로 통합 완료(2026-06-13)**: H2 썸네일 루프 ↔ Gemini 웹 소스 연결 = 생성 후 "🖼 이미지" 패널에서 소제목 다중 선택 → 기본카드 일괄 / Gemini 웹 순차 1개씩(반자동 특성상 캡션당 사용자 전송). 위 "2026-06-13 작업" 참조.
+   - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단, autoSend 자동전송 쓸 때만 실측 필요). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
 2. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
 3. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
 4. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).

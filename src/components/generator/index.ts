@@ -76,6 +76,26 @@ export function extractH2Captions(html: string): string[] {
   return out;
 }
 
+/**
+ * 소제목별 섹션(캡션 + 다음 소제목 전까지 본문)을 등장 순서대로 추출(⑨ 이미지 패널 맥락용).
+ * 본문은 태그·마커 제거하고 공백 정리 — Gemini 프롬프트에 "이 소제목은 이런 내용" 맥락으로 동반한다.
+ */
+export function extractH2Sections(html: string): Array<{ caption: string; text: string }> {
+  const matches = [...html.matchAll(H2_TEXT_RE)];
+  return matches.map((m, i) => {
+    const caption = m[1]!.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    const start = (m.index ?? 0) + m[0].length;
+    const end = i + 1 < matches.length ? (matches[i + 1]!.index ?? html.length) : html.length;
+    const text = html
+      .slice(start, end)
+      .replace(/\[\[PF:[^\]]+\]\]/g, ' ') // 마커 제거
+      .replace(/<[^>]+>/g, ' ') // 태그 제거
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { caption, text };
+  });
+}
+
 /** 본문에서 제목 추출(07 §7): 첫 H2 텍스트. 없으면 주제 키워드. */
 export function extractTitle(contentHtml: string, fallback: string): string {
   const m = contentHtml.match(/<h2>(.*?)<\/h2>/);

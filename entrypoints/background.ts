@@ -1,9 +1,8 @@
 // Background (Service Worker) — 두뇌·라우터 — 05 §2. M1: ③ 생성 + ⑤ 저장 + ⑥⑦ 라우팅.
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
-import { geminiImageAdapter } from '@/adapters/ai/gemini-image';
 import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
-import { extractH2Captions, generateBody } from '@/components/generator';
+import { extractH2Sections, generateBody } from '@/components/generator';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
 import { analyzeDensity } from '@/components/validator/density';
 import { getActiveCredential, loadSettings } from '@/components/settings';
@@ -14,6 +13,7 @@ import { progress } from '@/lib/logger';
 import { callOffscreen } from '@/lib/offscreen';
 import type {
   ChannelName,
+  ComposeThumbsReq,
   ConvertReq,
   ConvertRes,
   DensityAnalyzeReq,
@@ -22,6 +22,7 @@ import type {
   GeminiRunRes,
   GeminiScrapeRes,
   GenerateReq,
+  GenerateRunRes,
   ImageInsertReq,
   InsertStartReq,
   Msg,
@@ -36,7 +37,7 @@ import type {
   VisualSpec,
 } from '@/lib/messaging';
 import type { AppError, BinaryOrRef, Result } from '@/types/common';
-import type { Settings, Visual } from '@/types/models';
+import type { Visual } from '@/types/models';
 
 export default defineBackground(() => {
   wireProgressBroadcast();
@@ -67,6 +68,11 @@ export default defineBackground(() => {
       callOffscreen<ConvertReq, ConvertRes>('convert.htmlmd', msg.payload as ConvertReq).then(
         sendResponse,
       );
+      return true;
+    }
+    if (msg.name === 'visual.composeSelected') {
+      // ⑨ 생성 후 사용자가 고른 소제목들 → 기본 카드(Canvas) 썸네일 합성(offscreen 위임).
+      handleComposeThumbs(msg.payload as ComposeThumbsReq).then(sendResponse);
       return true;
     }
     if (msg.name === 'visual.fetch') {
@@ -110,10 +116,9 @@ async function handleTopicCollect(req: TopicCollectReq): Promise<Result<TopicCol
   return { ok: true, value: { topics: res.value } };
 }
 
-// ③ 생성 → ⑨ 비주얼 → ④ 합성 → ⑤ 저장. M1: 키 1개, 순환 없음(R-0.2는 M2).
-async function handleGenerate(
-  req: GenerateReq,
-): Promise<Result<{ payloadId: string; visuals: Visual[] }>> {
+// ③ 생성 → ④ 합성 → ⑤ 저장. 이미지(⑨)는 생성 후 사용자가 소제목을 골라 별도로 만든다(이미지 패널).
+// M1: 키 1개, 순환 없음(R-0.2는 M2).
+async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>> {
   const settings = await loadSettings();
   const credential = getActiveCredential(settings);
   if (!credential) {
@@ -135,11 +140,8 @@ async function handleGenerate(
   });
   if (!res.ok) return res;
 
-  // ⑨ 비주얼: 소제목 썸네일 옵션 ON 이면 H2 캡션으로 생성(기본=Canvas, AI=Gemini). 실패해도 본문은 진행(R-7.1).
-  const visuals = await buildVisuals(res.value, req.options, settings);
-
-  // ④ 부가요소 합성: 본문 마커 → 순서 보장 InsertQueue. 이미지 마커는 visuals 와 1:1(R-7.6).
-  const composed = compose(res.value, req.options, visuals);
+  // ④ 부가요소 합성: 본문 마커 → 순서 보장 InsertQueue. 이미지는 생성 후 선택식이라 여기선 비주얼 없음.
+  const composed = compose(res.value, req.options, []);
   if (!composed.ok) {
     progress('compose', composed.error.message, { level: 'error' });
     return composed;
@@ -147,85 +149,34 @@ async function handleGenerate(
 
   const id = crypto.randomUUID();
   const payload = buildPayload(id, res.value, 'TEMP_SAVE', req.options, composed.value); // 기본 임시저장(R-5.1)
-  payload.visuals = visuals;
   await savePayload(payload);
-  return { ok: true, value: { payloadId: id, visuals } };
+  // ⑨ 소제목 목록(캡션+섹션 맥락) 동반 → 사이드패널 이미지 패널이 골라 생성.
+  const sections = extractH2Sections(res.value);
+  return { ok: true, value: { payloadId: id, visuals: [], sections } };
 }
 
-// ⑨ 소제목 썸네일 생성(M3 WP4/A3). H2 캡션 → 소스 모드별 생성.
-// 비주얼은 선택 단계(R-7.1) — 옵션 OFF 거나 실패하면 빈 배열로 본문만 진행한다.
-async function buildVisuals(
-  contentHtml: string,
-  options: GenerateReq['options'],
-  settings: Settings,
-): Promise<Visual[]> {
-  if (!options.h2Thumbnail) return [];
-  const captions = extractH2Captions(contentHtml);
-  if (!captions.length) return [];
-
-  // AI 모드 + 키 있으면 Gemini 이미지 생성, 아니면 기본(Canvas). 키 없는 AI 선택은 기본으로 폴백.
-  const mode = options.h2Thumbnail.source ?? 'DEFAULT';
-  if (mode === 'AI') {
-    if (settings.aiImageCredential) return buildAiThumbnails(captions, settings);
-    progress('visual', 'AI 이미지 키가 없어 기본 썸네일로 만듭니다.', { level: 'warn' });
-  }
-
-  progress('visual', `소제목 썸네일 ${captions.length}개 생성 중…`, { percent: 32 });
-  const specs: VisualSpec[] = captions.map((h2Caption) => ({
+// ⑨ 선택 소제목 → 기본 카드(Canvas) 썸네일 합성(M3 WP4). 생성 후 이미지 패널이 호출, offscreen 위임.
+// 중복 회피는 항상 ON(R-7.4). DOM/Canvas 필요라 background 는 offscreen 으로 넘긴다(05 §2 WP0).
+async function handleComposeThumbs(req: ComposeThumbsReq): Promise<Result<VisualComposeRes>> {
+  if (!req.captions.length) return { ok: true, value: { visuals: [] } };
+  progress('visual', `소제목 썸네일 ${req.captions.length}개 생성 중…`, { percent: 50 });
+  const specs: VisualSpec[] = req.captions.map((h2Caption) => ({
     role: 'H2_THUMB',
     source: 'DEFAULT',
     h2Caption,
   }));
   const res = await callOffscreen<VisualComposeReq, VisualComposeRes>('visual.compose', {
     specs,
-    style: options.h2Thumbnail,
-    quality: options.h2Thumbnail.quality, // 압축 품질(WP5 5-2)
+    style: req.style,
+    quality: req.quality, // 압축 품질(WP5 5-2)
     dedup: true, // 중복 회피 항상 ON(R-7.4, WP5 5-1)
   });
   if (!res.ok) {
     progress('visual', `썸네일 생성 건너뜀: ${res.error.message}`, { level: 'warn' });
-    return [];
+    return res;
   }
-  return res.value.visuals;
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-// ⑨ AI(Gemini) 소제목 썸네일 — 캡션마다 이미지 생성 → Dexie 저장 → ref Visual.
-// 외부 호출은 캡션 사이 지연으로 rate limit 회피(R-7.5). 일부 실패는 건너뛰고 진행(R-7.1).
-async function buildAiThumbnails(captions: string[], settings: Settings): Promise<Visual[]> {
-  const credential = settings.aiImageCredential!;
-  const model = settings.aiImageModel ?? 'gemini-2.5-flash-image';
-  const out: Visual[] = [];
-  for (let i = 0; i < captions.length; i++) {
-    const caption = captions[i]!;
-    progress('visual', `AI 썸네일 ${i + 1}/${captions.length} 생성 중…`, { percent: 32 });
-    const res = await geminiImageAdapter.generate({ prompt: thumbPrompt(caption), model, credential });
-    if (!res.ok) {
-      progress('visual', `AI 썸네일 건너뜀: ${res.error.message}`, { level: 'warn' });
-      continue;
-    }
-    const id = crypto.randomUUID();
-    await dexieRecordStore.put({
-      id,
-      blob: inlineToBlob(res.value),
-      meta: { role: 'H2_THUMB', source: 'AI', caption },
-    });
-    out.push({
-      role: 'H2_THUMB',
-      source: 'AI',
-      data: { kind: 'ref', id },
-      dedupApplied: false, // AI 생성물은 매번 달라 별도 중복 회피 불필요
-      h2Caption: caption,
-    });
-    if (i < captions.length - 1) await sleep(600 + Math.floor(Math.random() * 600)); // 0.6~1.2s(R-7.5)
-  }
-  return out;
-}
-
-// 소제목 → 이미지 생성 프롬프트. 글자 렌더는 불안정해 텍스트 없는 일러스트로 요청.
-function thumbPrompt(caption: string): string {
-  return `한국어 블로그 소제목 "${caption}" 을 표현하는 깔끔한 일러스트 썸네일. 텍스트·글자 없이, 단순하고 밝은 배경, 가로형.`;
+  progress('visual', `소제목 썸네일 ${res.value.visuals.length}개 생성 완료`, { percent: 100 });
+  return res;
 }
 
 // adapter inline dataUrl(base64) → Blob. SW 엔 atob 사용 가능(FileReader 없음).
@@ -331,45 +282,45 @@ async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
 }
 
 // 네이버 글쓰기 탭 content script 로 cmd 전달(본문 프레임이 응답). insert.start·image.insert 공용.
-// blog.naver.com 탭이 여러 개일 수 있다(글 보기 + 글쓰기) → 단순 tabs[0] 는 엉뚱한 보기 탭을 집는다.
-// 글쓰기 프레임(PostWriteForm)을 가진 탭만 고른다. 또 본문은 중첩 iframe(mainFrame) 안이라
-// 탭 전체 브로드캐스트는 top 프레임의 무응답(return false)이 먼저 undefined 로 resolve 돼 버린다
-// (Chrome tabs.sendMessage 멀티프레임 한계) → 프레임마다 개별 전송해 에디터 Result(ok)만 채택.
+// blog.naver.com 탭이 여러 개일 수 있고(글 보기 + 글쓰기), 본문은 중첩 iframe 안이라
+// 탭 전체 브로드캐스트는 top 프레임의 무응답이 먼저 undefined 로 resolve 돼 버린다(Chrome 멀티프레임 한계).
+// → 모든 blog.naver.com 탭의 모든 프레임에 프레임별 개별 전송하고, 에디터 프레임만 hasEditorHere(.se-canvas)
+//   로 Result(ok)를 돌려준다. 에디터 iframe 주소(과거 'PostWriteForm')에 의존하지 않아 네이버 변경에 견고하다.
 async function forwardToEditor<T>(name: ChannelName, payload: T): Promise<Result<void>> {
   const tabs = await chrome.tabs.query({ url: 'https://blog.naver.com/*' });
-  let editorTabId: number | undefined;
-  let frames: chrome.webNavigation.GetAllFrameResultDetails[] = [];
-  for (const t of tabs) {
-    if (!t.id) continue;
-    const fs = (await chrome.webNavigation.getAllFrames({ tabId: t.id })) ?? [];
-    if (fs.some((f) => f.url.includes('PostWriteForm'))) {
-      editorTabId = t.id; // 글쓰기 프레임이 있는 탭 = 진짜 에디터 탭
-      frames = fs;
-      break;
-    }
-  }
-  if (editorTabId === undefined) {
+  const editorTabs = tabs.filter((t): t is chrome.tabs.Tab & { id: number } => t.id !== undefined);
+  if (editorTabs.length === 0) {
     return failed(
-      appError(ERR.EDITOR_NOT_FOUND, '네이버 글쓰기 화면을 찾지 못했어요. 글쓰기 페이지를 열어 주세요.'),
+      appError(ERR.EDITOR_NOT_FOUND, '네이버 글쓰기 페이지가 열려 있지 않아요. 글쓰기 화면을 먼저 열어 주세요.'),
     );
   }
+
   const fwd: Msg<T> = { kind: 'cmd', name, payload };
+  let reached = false; // 적어도 한 프레임의 content script 가 살아 응답했나(orphaned 여부 판별)
   let lastError = '';
-  for (const frame of frames) {
-    try {
-      const res = (await chrome.tabs.sendMessage(editorTabId, fwd, { frameId: frame.frameId })) as
-        | Result<void>
-        | undefined;
-      // 에디터 프레임만 Result 를 돌려준다. 그 외 프레임은 무응답(undefined)이라 건너뛴다.
-      if (res && typeof (res as { ok?: unknown }).ok === 'boolean') return res;
-    } catch (e) {
-      lastError = String(e); // 리스너 없는 프레임 → "receiving end does not exist". 다음 프레임 시도.
+  for (const tab of editorTabs) {
+    const frames = (await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [];
+    for (const frame of frames) {
+      try {
+        const res = (await chrome.tabs.sendMessage(tab.id, fwd, { frameId: frame.frameId })) as
+          | Result<void>
+          | undefined;
+        reached = true; // 응답이 undefined 라도 리스너는 살아있음(= CS 주입 정상)
+        // 에디터 프레임만 Result 를 돌려준다(나머지 프레임은 hasEditorHere=false 라 undefined).
+        if (res && typeof (res as { ok?: unknown }).ok === 'boolean') return res;
+      } catch (e) {
+        lastError = String(e); // CS 없는/끊긴 프레임 → "receiving end does not exist". 다음 프레임 시도.
+      }
     }
   }
+
+  // reached=false = 모든 프레임이 CS 끊김(확장 리로드 후 새로고침 안 함) / true = CS 는 살아있는데 본문 영역 없음.
   return failed(
     appError(
       ERR.EDITOR_NOT_FOUND,
-      '에디터 프레임을 찾지 못했어요. 글쓰기 페이지를 새로고침한 뒤 다시 시도해 주세요.',
+      reached
+        ? '글쓰기 본문 영역을 찾지 못했어요. SmartEditor 글쓰기 화면이 맞는지 확인해 주세요.'
+        : '글쓰기 페이지의 확장 연결이 끊겼어요. 글쓰기 페이지를 새로고침(F5)한 뒤 다시 시도해 주세요.',
       lastError ? { failedStep: lastError } : undefined,
     ),
   );

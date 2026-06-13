@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractH2Captions, injectH2ThumbMarkers } from '@/components/generator';
+import { extractH2Captions, extractH2Sections, injectH2ThumbMarkers } from '@/components/generator';
 import { composeVisuals } from '@/components/visual';
 import { wrapLines } from '@/components/visual/thumbnail';
 import { scan } from '@/lib/markers';
@@ -27,6 +27,21 @@ describe('extractH2Captions', () => {
   it('소제목 텍스트를 순서대로, 태그 제거해 뽑는다', () => {
     const html = '<h2>첫 <strong>제목</strong></h2><p>x</p><h2>둘째</h2>';
     expect(extractH2Captions(html)).toEqual(['첫 제목', '둘째']);
+  });
+});
+
+describe('extractH2Sections (⑨ 이미지 패널 소제목+맥락)', () => {
+  it('소제목별로 다음 소제목 전까지 본문을 태그·마커 제거해 묶는다', () => {
+    const html =
+      '<h2>가</h2><p>가 본문</p>[[PF:H2THUMB:1]]<h2>나</h2><p>나 <strong>본문</strong></p>';
+    expect(extractH2Sections(html)).toEqual([
+      { caption: '가', text: '가 본문' },
+      { caption: '나', text: '나 본문' },
+    ]);
+  });
+
+  it('소제목이 없으면 빈 배열', () => {
+    expect(extractH2Sections('<p>소제목 없는 글</p>')).toEqual([]);
   });
 });
 
