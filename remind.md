@@ -2,7 +2,7 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-09 / 브랜치 `main` / HEAD `5e76926`.
+마지막 갱신: 2026-06-13 / 브랜치 `main` / HEAD `f0586f6` (+ Gemini 웹 반자동 — 이 커밋에 반영).
 
 > ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
 >
@@ -40,7 +40,27 @@
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
 
-### 2026-06-09 작업 (이번 세션)
+### 2026-06-11~12 작업 (Gemini 웹 반자동 — 이번 세션)
+
+⑨ 이미지 전략 = **Gemini 웹 반자동**(유료 API 폐기 대체) 스파이크 → 동작 + 삽입경로 합류까지 배선. 상세: `docs/manual/milestone/M3-Gemini스파이크.md`.
+
+1. **스파이크 실측**(`tools/spike/gemini-probe.js`) — gemini.google.com DOM 덤프. 확정:
+   - 입력칸 = Quill `rich-textarea .ql-editor[contenteditable]`(aria-label "Gemini 프롬프트 입력").
+   - 생성 이미지 = `single-image img`(class `image animate loaded`), **src=`blob:`**(같은 origin → CS `fetch` 로 바이트 추출).
+   - **완료 신호 = img `loaded` 클래스 + naturalWidth>0**. ⚠️ `image-loading-overlay` 는 완료 후에도 DOM 잔존 → **존재 여부로 판정 금지**(초기 타임아웃 버그 원인, 수정함).
+   - 전송버튼은 **빈 입력 땐 미렌더** → 반자동(사용자 전송)이라 비차단. autoSend 자동전송 쓸 때만 실측 필요(현재 추측 폴백).
+2. **라이브 검증 통과** — 격리월드 CS 에서 Quill 입력 주입 OK(`world:MAIN` 불필요), blob 스크랩 OK.
+3. **배선**:
+   - `entrypoints/gemini.content.ts`(신규) — 프롬프트 주입(`setPrompt`: paste→insertText→textContent)·완료 폴링(`waitForImage`)·blob→dataUrl 스크랩(`imgToDataUrl`).
+   - `gemini.run` 채널(`messaging.ts`): `GeminiRunReq{prompt,autoSend?,role?,h2Caption?}`, CS→BG 내부 `GeminiScrapeRes{dataUrl}`, BG→UI `GeminiRunRes{visual}`.
+   - `background.ts`: `forwardToGemini`(탭 릴레이) + `handleGeminiRun`(dataUrl → `inlineToBlob` → `dexieRecordStore.put` → `Visual{role,source:'AI',data:{kind:'ref',id}}`). CS 는 Dexie 못 써 BG 가 저장(visual.fetch 와 같은 이유).
+   - `selectors.ts`: `GEMINI`(셀렉터)·`GEMINI_DEFAULTS`(타임아웃, resultTimeout 240s — 사용자 전송 대기 포함).
+   - `App.tsx`: "Gemini 웹 이미지(반자동)" 블록(프롬프트+버튼) → 결과 Visual 을 `visuals[]` 합류 → 기존 썸네일 미리보기·`image.insert` 커서 삽입 경로 재사용.
+   - host 권한은 기존 `https://*/*` 로 커버. CS matches `https://gemini.google.com/*`.
+
+> ⚠️ **운영 주의(추가)**: gemini 탭도 네이버와 동일 — 확장 리로드 시 **열려있던 gemini 탭 F5** 안 하면 "Receiving end does not exist"(orphaned CS).
+
+### 2026-06-09 작업 (이전 세션)
 
 1. **삽입 실패 근본 원인 2개 해결** (`5e76926`) — 증상은 삽입 시 "백그라운드 응답이 없어요"(= `forwardToEditor` 가 undefined 반환).
    - **엉뚱한 탭 선택**: `forwardToEditor` 가 `tabs[0]` 사용 → 같이 열린 블로그 **글보기 탭**으로 메시지를 보냄(글쓰기 탭 아님). → `blog.naver.com/*` 탭들 중 **`PostWriteForm` 프레임을 가진 탭**(진짜 글쓰기 탭)을 골라 전송.
@@ -109,7 +129,10 @@
 | 부가요소 합성(마커→InsertQueue) | `src/components/composer/index.ts` |
 | 합성 정합성 검사 | `src/components/composer/validate.ts` |
 | 비주얼 합성(Canvas) | `src/components/visual/{thumbnail,index}.ts` |
-| AI 이미지 어댑터(Gemini, 현재 비활성) | `src/adapters/ai/gemini-image.ts` |
+| AI 이미지 어댑터(Gemini API, 현재 비활성) | `src/adapters/ai/gemini-image.ts` |
+| Gemini 웹 반자동 CS(입력·전송·완료폴링·blob 스크랩) | `entrypoints/gemini.content.ts` |
+| Gemini 웹 라우팅·Dexie 저장·Visual 승격 | `entrypoints/background.ts`(`forwardToGemini`/`handleGeminiRun`) |
+| Gemini 셀렉터·타임아웃 | `src/lib/selectors.ts`(`GEMINI`/`GEMINI_DEFAULTS`) |
 | 참조 첨부 추출(PDF·docx·hwpx·텍스트) | `src/components/reference/extract.ts` |
 | 이미지 저장(Dexie) | `src/adapters/storage/record-store.ts` |
 | HTML↔MD 변환·정제 | `src/components/validator/convert.ts` |
@@ -121,7 +144,8 @@
 
 ## 다음 할 일 (우선순위 제안)
 
-1. **Gemini 웹 반자동 스파이크** — `gemini.google.com` content script 주입, 프롬프트 입력·전송·결과 스크랩 PoC(DOM 덤프 실측). 깨지면 반자동(최종 전송만 사용자). 그 뒤 참조 바구니 이미지 첨부 → 이미지 생성 배선.
+1. **Gemini 웹 반자동 스파이크** ✅ 동작 확인 — 라이브 검증 통과: 입력 주입(#2/#8 격리월드 OK), blob 스크랩(#5/#9), 완료 판정(#4). **삽입경로 합류까지 배선 완료**: 사이드패널 "Gemini 웹 이미지(반자동)" 블록(프롬프트+버튼) → `gemini.run` → BG `handleGeminiRun`(CS 운전 → dataUrl → `dexieRecordStore.put` → `Visual{role,source:'AI',data:{kind:'ref',id}}`) → 사이드패널 `visuals[]` 합류 → 썸네일 미리보기 → 기존 `image.insert` 커서 삽입. 완료 신호는 img `loaded` 클래스(주의: `image-loading-overlay` 는 완료 후에도 DOM 잔존 → 존재 여부로 판정 금지). 핵심 파일: `entrypoints/gemini.content.ts`, `forwardToGemini`/`handleGeminiRun`(background), `GEMINI`/`GEMINI_DEFAULTS`(selectors).
+   - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단, autoSend 자동전송 쓸 때만 실측 필요). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7). H2 썸네일 루프에 Gemini 웹 소스 연결은 반자동 특성상 캡션당 사용자 전송 필요 — UX 검토 후.
 2. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
 3. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
 4. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).

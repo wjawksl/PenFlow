@@ -26,6 +26,7 @@ export type ChannelName =
   | 'generate.run'
   | 'visual.compose'
   | 'visual.fetch'
+  | 'gemini.run'
   | 'reference.fetch'
   | 'convert.htmlmd'
   | 'density.analyze'
@@ -91,6 +92,23 @@ export interface VisualFetchReq {
 }
 export interface VisualFetchRes {
   dataUrl: string; // base64 dataUrl (메시지로 안전 전달)
+}
+
+// ⑨ Gemini 웹 반자동(M3 스파이크): gemini.google.com 탭 CS 를 운전해 이미지 생성.
+// 유료 API 폐기 대체 — 무료 웹 세션. 프롬프트 주입 → (반자동: 사용자가 전송) → 완료 폴링 → blob 스크랩.
+export interface GeminiRunReq {
+  prompt: string;
+  autoSend?: boolean; // 기본 false = 반자동(사용자가 최종 전송). true 면 CS 가 전송 버튼 클릭.
+  role?: VisualRole; // 저장될 Visual 역할(기본 BODY_IMAGE)
+  h2Caption?: string; // 소제목 캡션(선택) — 미리보기/정합성용
+}
+// CS→BG 내부 응답: CS 는 Dexie 접근 불가라 dataUrl 만 돌려준다. BG 가 Dexie 저장 후 Visual 로 승격.
+export interface GeminiScrapeRes {
+  dataUrl: string; // 생성 이미지(blob: → dataUrl 로 안전 전달)
+}
+// BG→사이드패널 응답: Dexie ref 로 저장된 Visual — 기존 image.insert 삽입경로에 합류.
+export interface GeminiRunRes {
+  visual: Visual;
 }
 
 // 참조 바구니(WP — 참고자료 크롤링): 링크 1건을 background 가 fetch → 본문 텍스트 추출.

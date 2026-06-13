@@ -5,6 +5,8 @@ import { loadSettings, setDensityRange } from '@/components/settings';
 import type {
   DensityAnalyzeReq,
   DensityAnalyzeRes,
+  GeminiRunReq,
+  GeminiRunRes,
   GenerateReq,
   ImageInsertReq,
   ReferenceFetchReq,
@@ -125,6 +127,9 @@ export function App() {
   const [thumbUrls, setThumbUrls] = useState<string[]>([]); // 미리보기용 object URL
   const [imgInserting, setImgInserting] = useState<number | null>(null); // 수동 삽입 중인 썸네일 index
   const [imgMsg, setImgMsg] = useState(''); // 썸네일 삽입 결과 메시지
+  const [geminiPrompt, setGeminiPrompt] = useState(''); // ⑨ Gemini 웹 반자동 이미지 프롬프트
+  const [geminiBusy, setGeminiBusy] = useState(false); // Gemini 웹 생성 진행 중
+  const [geminiMsg, setGeminiMsg] = useState(''); // Gemini 웹 생성 안내/결과 메시지
   const [storageUsage, setStorageUsage] = useState<{ usage: number; quota: number } | null>(null); // 용량 미터(WP5 5-3)
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
@@ -406,6 +411,26 @@ export function App() {
     const res = await sendCmd<ImageInsertReq, void>('image.insert', { id: v.data.id });
     setImgInserting(null);
     setImgMsg(res.ok ? `썸네일 ${i + 1} 삽입됨` : res.error.message);
+  }
+
+  // ⑨ Gemini 웹 반자동 이미지 생성 — gemini.google.com 탭을 운전(반자동: 사용자가 전송).
+  // 결과 Visual(ref)을 visuals[]에 합류 → 위 썸네일 미리보기·삽입 경로를 그대로 탄다.
+  async function onGeminiGenerate() {
+    if (!geminiPrompt.trim() || geminiBusy) return;
+    setGeminiBusy(true);
+    setGeminiMsg('Gemini 탭에 프롬프트를 넣었어요. Gemini 화면에서 전송하면 자동으로 가져옵니다…');
+    const res = await sendCmd<GeminiRunReq, GeminiRunRes>('gemini.run', {
+      prompt: geminiPrompt.trim(),
+      autoSend: false, // 반자동 — 사용자가 Gemini 화면에서 최종 전송
+      role: 'BODY_IMAGE',
+    });
+    setGeminiBusy(false);
+    if (res.ok) {
+      setVisuals((prev) => [...prev, res.value.visual]); // 삽입경로 합류
+      setGeminiMsg('이미지를 가져왔어요. 아래 썸네일에서 골라 삽입하세요.');
+    } else {
+      setGeminiMsg(res.error.message);
+    }
   }
 
   const busy = phase === 'generating' || phase === 'inserting';
@@ -851,6 +876,31 @@ export function App() {
               </div>
             )}
           </div>
+        </fieldset>
+
+        {/* ⑨ Gemini 웹 반자동 이미지 생성 — 무료 웹 세션 운전(API 폐기 대체). 결과는 아래 썸네일에 합류. */}
+        <fieldset className="space-y-2 rounded border p-2">
+          <legend className="px-1 text-xs text-gray-500">Gemini 웹 이미지(반자동)</legend>
+          <p className="text-[11px] text-gray-400">
+            gemini.google.com 에 로그인한 탭을 열어 두세요. 프롬프트를 넣어 두면 Gemini 화면에서 직접 전송 →
+            생성되면 자동으로 가져옵니다.
+          </p>
+          <textarea
+            className="w-full resize-y rounded border p-2 text-xs"
+            rows={2}
+            placeholder="예) 밝고 단순한 고양이 일러스트, 텍스트 없이, 가로형"
+            value={geminiPrompt}
+            onChange={(e) => setGeminiPrompt(e.target.value)}
+          />
+          <button
+            className="w-full rounded bg-gray-900 py-1.5 text-xs text-white disabled:opacity-50"
+            onClick={onGeminiGenerate}
+            disabled={geminiBusy || !geminiPrompt.trim()}
+            type="button"
+          >
+            {geminiBusy ? '생성 대기 중… (Gemini에서 전송하세요)' : '🎨 Gemini 웹으로 생성'}
+          </button>
+          {geminiMsg && <p className="text-xs text-gray-500">{geminiMsg}</p>}
         </fieldset>
 
         {/* ⑨ 비주얼 미리보기(WP4/WP8) — 생성 썸네일. 자동 삽입 안 함, 골라서 커서에 수동 삽입. */}

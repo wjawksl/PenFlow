@@ -18,6 +18,9 @@ import type {
   ConvertRes,
   DensityAnalyzeReq,
   DensityAnalyzeRes,
+  GeminiRunReq,
+  GeminiRunRes,
+  GeminiScrapeRes,
   GenerateReq,
   ImageInsertReq,
   InsertStartReq,
@@ -69,6 +72,11 @@ export default defineBackground(() => {
     if (msg.name === 'visual.fetch') {
       // ⑥ WP8: content script 가 ref 이미지 바이트 요청 → Dexie 읽어 dataUrl 반환.
       handleVisualFetch(msg.payload as VisualFetchReq).then(sendResponse);
+      return true;
+    }
+    if (msg.name === 'gemini.run') {
+      // ⑨ Gemini 웹 반자동: 탭 CS 로 운전(입력·전송·스크랩) → dataUrl → Dexie 저장 → Visual 승격.
+      handleGeminiRun(msg.payload as GeminiRunReq).then(sendResponse);
       return true;
     }
     if (msg.name === 'reference.fetch') {
@@ -365,6 +373,48 @@ async function forwardToEditor<T>(name: ChannelName, payload: T): Promise<Result
       lastError ? { failedStep: lastError } : undefined,
     ),
   );
+}
+
+// ⑨ Gemini 웹 반자동: 탭 CS 운전 → 생성 이미지 dataUrl 수신 → Dexie 저장 → Visual(ref) 승격.
+// CS 는 페이지 origin 이라 Dexie 접근 불가 → visual.fetch 와 같은 이유로 BG 가 저장을 책임진다(05 §5).
+// 결과 Visual 은 사이드패널 visuals[] 에 합류해 기존 image.insert 수동 삽입 경로를 그대로 탄다.
+async function handleGeminiRun(req: GeminiRunReq): Promise<Result<GeminiRunRes>> {
+  const scraped = await forwardToGemini(req);
+  if (!scraped.ok) return scraped;
+
+  const id = crypto.randomUUID();
+  await dexieRecordStore.put({
+    id,
+    blob: inlineToBlob({ kind: 'inline', dataUrl: scraped.value.dataUrl }),
+    meta: { role: req.role ?? 'BODY_IMAGE', source: 'GEMINI_WEB', caption: req.h2Caption },
+  });
+  const visual: Visual = {
+    role: req.role ?? 'BODY_IMAGE',
+    source: 'AI', // VisualSource 어휘상 AI(웹 세션도 AI 생성물). 출처 구분은 meta.source 에 보관.
+    data: { kind: 'ref', id },
+    dedupApplied: false, // 매번 다른 생성물이라 중복 회피 불필요
+    h2Caption: req.h2Caption,
+  };
+  return { ok: true, value: { visual } };
+}
+
+// gemini.google.com 탭의 CS 로 cmd 전달(릴레이). 입력은 top 문서라 탭 전송으로 충분(프레임 불필요).
+async function forwardToGemini(payload: GeminiRunReq): Promise<Result<GeminiScrapeRes>> {
+  const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+  const tabId = tabs.find((t) => t.id !== undefined)?.id;
+  if (tabId === undefined) {
+    return failed(
+      appError('GEMINI_NO_TAB', 'Gemini 탭이 없어요. gemini.google.com 을 열고 로그인해 주세요.'),
+    );
+  }
+  const fwd: Msg<GeminiRunReq> = { kind: 'cmd', name: 'gemini.run', payload };
+  try {
+    const res = (await chrome.tabs.sendMessage(tabId, fwd)) as Result<GeminiScrapeRes> | undefined;
+    if (res && typeof (res as { ok?: unknown }).ok === 'boolean') return res;
+    return failed(appError('GEMINI_NO_RESPONSE', 'Gemini 탭이 응답하지 않아요. 페이지를 새로고침해 주세요.'));
+  } catch (e) {
+    return failed(appError('GEMINI_NO_RESPONSE', `Gemini 탭 연결 실패: ${String(e)}`));
+  }
 }
 
 function failed(error: AppError): Result<never> {
