@@ -1,5 +1,5 @@
 // AI 본문 어댑터 — Gemini 직접 호출(03 생성 방식 A). 얇은 fetch 래퍼(04 §6).
-// 키 순환·재시도는 상위(M1은 미적용, R-0.2는 M2)가 처리. 어댑터는 단일 호출만.
+// 키 순환·재시도는 상위(generateBody, R-0.2)가 처리. 어댑터는 단일 호출만 — AI_QUOTA(429/403)로 신호.
 import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { ok, err } from '@/types/common';
@@ -28,7 +28,7 @@ export const geminiTextAdapter: AITextAdapter = {
       );
 
       if (!res.ok) {
-        // 429/403 = 한도/인증 → 상위에서 키 전환 판단(M2). M1 은 사유 통지(R-2.3).
+        // 429/403 = 한도/인증 → 상위(generateBody)가 다음 키로 전환(R-0.2). 사유 통지(R-2.3).
         const quota = res.status === 429 || res.status === 403;
         return err(
           appError(

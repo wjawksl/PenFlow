@@ -18,7 +18,7 @@
 | **M2** | ② 주제 선정(검색량/블로그제목/연관검색어) + ④ 부가요소 합성(표·링크·CTA·백링크·광고문구) | ✅ 완료 |
 | **M3** | ⑨ 비주얼(이미지) + ⑩ 검증(변환·밀도) + Offscreen + 이미지 삽입 | 🟡 진행 중 |
 | M4 | ⑧ 연속/예약/간격 자동화 + 발행(PUBLISH) | ⬜ 예정 |
-| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 | 🟡 프롬프트 라이브러리(R-2.1) ✅ / 복수키·대화형 ⬜ |
+| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 | 🟡 프롬프트 라이브러리(R-2.1)·복수키 순환(R-0.2) ✅ / 대화형(B) ⬜ |
 
 ---
 
@@ -39,6 +39,17 @@
 ---
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
+
+### 2026-06-14 작업 (복수 API키 순환 R-0.1·R-0.2 — 이번 세션)
+
+본문 생성 키를 **여러 개 등록 → 한도 초과 시 다음 키로 자동 전환**. 대량 정보성 글 생성 시 쿼터 벽 대응. 기존엔 `aiTextCredentials[]` 가 배열인데 `getActiveCredential`=`[0]` 만 써 1개만 동작했음.
+
+1. **순환 지점 = `generateBody`**(`generator/index.ts`) — `credential: Credential` → `credentials: Credential[]`. 첫 키로 호출 → 결과가 `AI_QUOTA`(어댑터가 429/403 매핑)면 다음 키로 재시도, 다 떨어지면 마지막 에러 반환. **비-quota 오류(format/empty/h2누락)는 전환 안 하고 즉시 통지**(키 문제 아님). 빈 배열 → `NO_CREDENTIAL`.
+2. **호출부**(`background.ts handleGenerate`) — `getActiveCredential` 대신 `settings.aiTextCredentials` 통째 전달. (이미지 프롬프트 경로 `handleImagePrompt` 는 여전히 `getActiveCredential`=`[0]` — 순환 불필요.)
+3. **저장**(`settings/index.ts`) — `setAiKey`(단일) → **`setAiKeys(apiKeys[], model)`**: 줄별 trim·빈줄 무시, `ai_text_1..N` id 부여, 전부 비면 거부.
+4. **options UI** — API Key 입력 1칸(`<input>`) → **여러 줄 `<textarea>`**(한 줄에 키 하나). 안내문 추가. 로드 시 기존 키들 줄바꿈 join, 저장 시 `split('\n')`.
+5. **테스트**(`tests/generate-rotation.test.ts`) — 4케이스: 첫키 quota→둘째 성공(2회 호출) / 전부 quota→AI_QUOTA(N회) / format 오류→전환안함(1회) / 빈배열→NO_CREDENTIAL(0회).
+6. 검증: tsc 0, 테스트 88 pass(84+4), prod 빌드 OK. **브라우저 실측 미확인**(실제 쿼터 초과 전환).
 
 ### 2026-06-14 작업 (프롬프트 라이브러리 R-2.1 — 이번 세션)
 

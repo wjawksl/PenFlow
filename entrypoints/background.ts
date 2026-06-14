@@ -124,11 +124,11 @@ async function handleTopicCollect(req: TopicCollectReq): Promise<Result<TopicCol
 }
 
 // ③ 생성 → ④ 합성 → ⑤ 저장. 이미지(⑨)는 생성 후 사용자가 소제목을 골라 별도로 만든다(이미지 패널).
-// M1: 키 1개, 순환 없음(R-0.2는 M2).
+// 복수 키 등록 시 한도 초과(AI_QUOTA)면 generateBody 가 다음 키로 자동 전환(R-0.2).
 async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>> {
   const settings = await loadSettings();
-  const credential = getActiveCredential(settings);
-  if (!credential) {
+  const credentials = settings.aiTextCredentials;
+  if (credentials.length === 0) {
     // 키 미설정 → 생성 차단(1-3, TC-SET-04).
     return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
   }
@@ -142,7 +142,7 @@ async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>>
     reference: req.reference,
     options: req.options, // 부가요소 마커 지시(M2)
     adapter: geminiTextAdapter,
-    credential,
+    credentials, // 복수 키 순환(R-0.2)
     model: settings.aiModel,
   });
   if (!res.ok) return res;

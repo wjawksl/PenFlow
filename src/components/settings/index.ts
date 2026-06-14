@@ -19,17 +19,15 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await chromeKvStore.set(STORE_KEYS.settings, settings);
 }
 
-/** M1: AI 본문 키 1개를 set(있으면 교체). 빈 값/공백은 거부(6.4). */
-export async function setAiKey(apiKey: string, model: string): Promise<void> {
-  const trimmed = apiKey.trim();
-  if (!trimmed) throw new Error('빈 키는 저장할 수 없습니다.');
+/** AI 본문 키 복수 저장(R-0.1). 빈/공백 줄은 무시, 순서 = 한도 초과 시 순환 순서(R-0.2). 전부 비면 거부. */
+export async function setAiKeys(apiKeys: string[], model: string): Promise<void> {
   const settings = await loadSettings();
-  const cred: Credential = {
-    id: 'ai_text_1',
-    kind: 'ai_text',
-    fields: { apiKey: trimmed },
-  };
-  await saveSettings({ ...settings, aiTextCredentials: [cred], aiModel: model.trim() });
+  const creds: Credential[] = apiKeys
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0)
+    .map((apiKey, i): Credential => ({ id: `ai_text_${i + 1}`, kind: 'ai_text', fields: { apiKey } }));
+  if (creds.length === 0) throw new Error('빈 키는 저장할 수 없습니다.');
+  await saveSettings({ ...settings, aiTextCredentials: creds, aiModel: model.trim() });
 }
 
 /** ⑩ 권장 밀도 범위 저장(R-8.2). min>max 등 비정상 입력은 호출부에서 정리. */

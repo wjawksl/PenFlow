@@ -3,12 +3,12 @@ import { useEffect, useState } from 'react';
 import {
   DEFAULT_SETTINGS,
   loadSettings,
-  setAiKey,
+  setAiKeys,
   setKeywordToolCred,
 } from '@/components/settings';
 
 export function OptionsApp() {
-  const [apiKey, setApiKey] = useState('');
+  const [apiKeys, setApiKeys] = useState(''); // 본문 키 — 한 줄에 하나(복수 순환 R-0.1)
   const [model, setModel] = useState(DEFAULT_SETTINGS.aiModel);
   const [kwApiKey, setKwApiKey] = useState(''); // 검색광고 액세스 라이선스
   const [kwSecret, setKwSecret] = useState('');
@@ -19,7 +19,7 @@ export function OptionsApp() {
   useEffect(() => {
     loadSettings().then((s) => {
       setModel(s.aiModel);
-      if (s.aiTextCredentials[0]) setApiKey(s.aiTextCredentials[0].fields.apiKey ?? '');
+      setApiKeys(s.aiTextCredentials.map((c) => c.fields.apiKey ?? '').join('\n'));
       const kw = s.keywordToolCredential?.fields;
       if (kw) {
         setKwApiKey(kw.apiKey ?? '');
@@ -31,13 +31,13 @@ export function OptionsApp() {
 
   async function onSave() {
     setStatus('');
-    if (!apiKey.trim()) {
+    if (!apiKeys.trim()) {
       setStatus('⚠ 키를 입력해 주세요.'); // 6.4 빈 값 거부 (TC-SET-03)
       return;
     }
     setSaving(true);
     try {
-      await setAiKey(apiKey, model); // 공백 트리밍 저장 (TC-SET-05)
+      await setAiKeys(apiKeys.split('\n'), model); // 줄별 키·공백 트리밍 저장(R-0.1)
       await setKeywordToolCred(kwApiKey, kwSecret, kwCustomerId); // ② 검색광고(선택)
       setStatus('✅ 저장했어요.');
     } catch (e) {
@@ -56,14 +56,16 @@ export function OptionsApp() {
       </div>
 
       <section className="rounded border p-4">
-        <h2 className="mb-3 font-semibold">AI 본문 생성 키 (필수)</h2>
-        <label className="mb-1 block text-xs text-gray-500">API Key</label>
-        <input
-          className="mb-3 w-full rounded border px-2 py-1"
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="Gemini API Key"
+        <h2 className="mb-1 font-semibold">AI 본문 생성 키 (필수)</h2>
+        <p className="mb-3 text-xs text-gray-500">
+          한 줄에 키 하나. 위에서부터 쓰다가 한도 초과 시 다음 키로 자동 전환합니다(R-0.1·R-0.2).
+        </p>
+        <label className="mb-1 block text-xs text-gray-500">API Key (복수 가능)</label>
+        <textarea
+          className="mb-3 h-20 w-full rounded border px-2 py-1 font-mono text-xs"
+          value={apiKeys}
+          onChange={(e) => setApiKeys(e.target.value)}
+          placeholder={'Gemini API Key (한 줄에 하나)\n여러 개 등록 시 한도 초과 자동 전환'}
         />
         <label className="mb-1 block text-xs text-gray-500">모델</label>
         <input

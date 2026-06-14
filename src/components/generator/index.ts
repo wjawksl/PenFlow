@@ -1,5 +1,5 @@
-// ③ 본문 생성기 (M1: 직접 호출만) — WP2. 조립→호출→후처리→구조검사→HTML.
-// 웹 자동화(B)·참고자료 크롤링·프롬프트 라이브러리·일괄생성은 이후 마일스톤.
+// ③ 본문 생성기 — WP2. 조립→호출(복수 키 순환 R-0.2)→후처리→구조검사→HTML.
+// 웹 자동화(B)·일괄생성은 이후 마일스톤.
 import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
@@ -16,17 +16,23 @@ export interface GenerateParams {
   reference?: string;
   options?: PayloadOptions; // 켜진 부가요소 마커를 프롬프트에 지시(M2)
   adapter: AITextAdapter;
-  credential: Credential;
+  credentials: Credential[]; // 복수 키 — 한도 초과 시 순서대로 전환(R-0.1, R-0.2)
   model: string;
 }
 
 /** 생성 결과: 소제목(H2) 포함 본문 HTML. M1 마커 검사 = 소제목 1개 이상(구조 검사, 06 §5). */
 export async function generateBody(params: GenerateParams): Promise<Result<string>> {
-  const { topic, prompt, reference, options, adapter, credential, model } = params;
+  const { topic, prompt, reference, options, adapter, credentials, model } = params;
+  if (credentials.length === 0) return err(appError(ERR.NO_CREDENTIAL, 'AI 인증 키가 없습니다.'));
 
   progress('generate', 'AI 본문 생성 중…', { percent: 10 });
   const assembled = assemblePrompt(topic, prompt, reference, options);
-  const res = await adapter.generate({ prompt: assembled, model, credential });
+  // 복수 키 순환(R-0.2): 한도/인증 실패(AI_QUOTA=429/403)면 다음 키로 재시도. 그 외 오류는 즉시 통지.
+  let res = await adapter.generate({ prompt: assembled, model, credential: credentials[0]! });
+  for (let i = 1; i < credentials.length && !res.ok && res.error.code === ERR.AI_QUOTA; i++) {
+    progress('generate', `키 한도 초과 — ${i + 1}번째 키로 전환`, { percent: 10 });
+    res = await adapter.generate({ prompt: assembled, model, credential: credentials[i]! });
+  }
   if (!res.ok) {
     progress('generate', res.error.message, { level: 'error' });
     return res;

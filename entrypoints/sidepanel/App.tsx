@@ -730,7 +730,7 @@ export function App() {
               value={promptName}
               onChange={(e) => onPickPrompt(e.target.value)}
             >
-              <option value="">저장된 프롬프트…</option>
+              <option value="">선택</option>
               {prompts.map((p) => (
                 <option key={p.name} value={p.name}>
                   {p.name}
