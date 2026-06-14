@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { extractH2Captions, extractH2Sections, injectH2ThumbMarkers } from '@/components/generator';
+import {
+  composeImagePrompt,
+  extractH2Captions,
+  extractH2Sections,
+  injectH2ThumbMarkers,
+} from '@/components/generator';
+import type { AITextAdapter } from '@/adapters';
+import { ok, err, type Result } from '@/types/common';
+import { appError } from '@/lib/errors';
+import type { Credential } from '@/types/models';
 import { composeVisuals } from '@/components/visual';
 import { wrapLines } from '@/components/visual/thumbnail';
 import { scan } from '@/lib/markers';
@@ -42,6 +51,55 @@ describe('extractH2Sections (⑨ 이미지 패널 소제목+맥락)', () => {
 
   it('소제목이 없으면 빈 배열', () => {
     expect(extractH2Sections('<p>소제목 없는 글</p>')).toEqual([]);
+  });
+});
+
+describe('composeImagePrompt (⑨ 선택 소제목 → 본문 요약 합성)', () => {
+  const cred = {} as Credential;
+  const fakeAdapter = (out: Result<string>): AITextAdapter => ({
+    generate: async () => out,
+  });
+  const secs = [
+    { caption: '가', text: '가 본문 30%' },
+    { caption: '나', text: '나 본문' },
+  ];
+
+  it('LLM 요약을 코드펜스 제거 후 반환', async () => {
+    const adapter = fakeAdapter(ok('```\n요약 본문\n```'));
+    expect(await composeImagePrompt(secs, adapter, cred, 'm')).toBe('요약 본문');
+  });
+
+  it('레이아웃 템플릿 지시 — 골격·분기 규칙·숫자 보존, 스타일 배제', async () => {
+    let seen = '';
+    const spy: AITextAdapter = {
+      generate: async ({ prompt }) => {
+        seen = prompt;
+        return ok('x');
+      },
+    };
+    await composeImagePrompt(secs, spy, cred, 'm');
+    expect(seen).toContain('레이아웃 명세'); // 골격
+    expect(seen).toContain('플로우'); // 분기 규칙(절차→플로우)
+    expect(seen).toContain('숫자'); // 수치 보존
+    expect(seen).toContain('스타일 지시는 넣지 말 것'); // 스타일 배제
+    expect(seen).toContain('가 본문 30%'); // 섹션 본문 동반
+  });
+
+  it('LLM 실패면 빈 문자열로 폴백(본문 생성과 분리)', async () => {
+    const failed = fakeAdapter(err(appError('X', '실패')));
+    expect(await composeImagePrompt(secs, failed, cred, 'm')).toBe('');
+  });
+
+  it('섹션이 없으면 빈 문자열(LLM 호출 안 함)', async () => {
+    let called = false;
+    const adapter: AITextAdapter = {
+      generate: async () => {
+        called = true;
+        return ok('x');
+      },
+    };
+    expect(await composeImagePrompt([], adapter, cred, 'm')).toBe('');
+    expect(called).toBe(false);
   });
 });
 

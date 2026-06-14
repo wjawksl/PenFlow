@@ -28,6 +28,7 @@ export type ChannelName =
   | 'visual.composeSelected'
   | 'visual.fetch'
   | 'gemini.run'
+  | 'image.prompt'
   | 'reference.fetch'
   | 'convert.htmlmd'
   | 'density.analyze'
@@ -60,7 +61,7 @@ export interface GenerateRes {
 // ⑨ 소제목 1건 = 캡션 + 해당 섹션 본문 발췌. 생성 후 이미지 패널의 소제목 선택·맥락 동반에 쓰인다.
 export interface H2Section {
   caption: string; // 소제목 텍스트
-  text: string; // 다음 소제목 전까지 본문(태그·마커 제거, Gemini 프롬프트 맥락용)
+  text: string; // 다음 소제목 전까지 본문(태그·마커 제거, 이미지 프롬프트 합성 입력·표시용)
 }
 // generate.run 응답(05 §3): 페이로드 id + (생성 시점엔 비어있는) 비주얼 + 소제목 목록.
 export interface GenerateRunRes {
@@ -129,6 +130,15 @@ export interface GeminiScrapeRes {
 // BG→사이드패널 응답: Dexie ref 로 저장된 Visual — 기존 image.insert 삽입경로에 합류.
 export interface GeminiRunRes {
   visual: Visual;
+}
+
+// image.prompt(05): 선택한 소제목들을 "본문 요약" 한 덩이로 압축(텍스트 LLM 1회).
+// 스타일·방향(가로/세로)·기본 지시는 사이드패널이 전송 직전 조립 — 여기선 본문 요약만.
+export interface ImagePromptReq {
+  sections: H2Section[]; // 선택된 소제목들(캡션+본문)
+}
+export interface ImagePromptRes {
+  prompt: string; // 본문 요약(편집 후 스타일과 조립해 Gemini 전송)
 }
 
 // 참조 바구니(WP — 참고자료 크롤링): 링크 1건을 background 가 fetch → 본문 텍스트 추출.

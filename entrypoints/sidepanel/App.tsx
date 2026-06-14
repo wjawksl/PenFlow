@@ -12,6 +12,8 @@ import type {
   GenerateRunRes,
   H2Section,
   ImageInsertReq,
+  ImagePromptReq,
+  ImagePromptRes,
   ReferenceFetchReq,
   ReferenceFetchRes,
   TopicCollectReq,
@@ -77,12 +79,11 @@ const EXTRAS_INIT: Extras = {
 
 // ⑨ 이미지 생성 방식 — 기본 카드(Canvas) / Gemini 웹 반자동.
 type ImageMode = 'DEFAULT' | 'GEMINI';
+// ⑨ Gemini 이미지 방향(가로/세로) — 전송 직전 기본 지시에 박힌다.
+type ImageOrient = 'LANDSCAPE' | 'PORTRAIT';
+const ORIENT_LABEL: Record<ImageOrient, string> = { LANDSCAPE: '가로형', PORTRAIT: '세로형' };
 const THUMB_BG_INIT = '#1f2937';
 const THUMB_QUALITY_INIT = 0.85;
-// ⑨ Gemini 프롬프트에 넣는 소제목 본문 맥락 상한(글자). 요약 없이 전문을 넘기되,
-// 너무 길면 Quill 주입 신뢰도·이미지 품질이 떨어져 안전 상한에서 자른다(초과 시 패널에 표시).
-const GEMINI_CTX_MAX = 4000;
-
 // 배경 밝기에 따라 가독성 좋은 글자색 선택(흰/검).
 function pickFg(hex: string): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
@@ -108,6 +109,7 @@ export function App() {
   const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(첨부파일·링크·텍스트)
   const [refUrl, setRefUrl] = useState('');
   const [refText, setRefText] = useState('');
+  const [refTitle, setRefTitle] = useState(''); // 텍스트 붙여넣기 제목(선택)
   const [extras, setExtras] = useState<Extras>(EXTRAS_INIT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState('');
@@ -134,7 +136,10 @@ export function App() {
   const [sections, setSections] = useState<H2Section[]>([]); // 생성 본문의 소제목 목록(캡션+맥락)
   const [imgSel, setImgSel] = useState<Set<number>>(new Set()); // 선택한 소제목 인덱스(다중)
   const [imgMode, setImgMode] = useState<ImageMode>('DEFAULT'); // 생성 방식
-  const [imgPrompt, setImgPrompt] = useState(''); // 추가 프롬프트(Gemini 방식)
+  const [imgOrient, setImgOrient] = useState<ImageOrient>('LANDSCAPE'); // 이미지 방향(가로/세로)
+  const [imgStyle, setImgStyle] = useState(''); // 이미지 스타일/지시 — 유저가 자유 프롬프팅(전송 시 본문요약 아래 분리 삽입)
+  const [comboPrompt, setComboPrompt] = useState(''); // 선택 소제목 본문 요약(편집 가능). 스타일은 미포함.
+  const [promptBusy, setPromptBusy] = useState(false); // 본문 요약 합성 중
   const [thumbBg, setThumbBg] = useState(THUMB_BG_INIT); // 기본 카드 배경색
   const [thumbQuality, setThumbQuality] = useState(THUMB_QUALITY_INIT); // 기본 카드 압축 품질
   const [imgBusy, setImgBusy] = useState(false); // 이미지 생성 진행 중
@@ -323,19 +328,35 @@ export function App() {
     }
   }
 
-  // 참조 바구니: 텍스트 직접 붙여넣기(중요한 내용만 추려 넣을 때).
+  // 참조 바구니: 텍스트 직접 붙여넣기(중요한 내용만 추려 넣을 때). 제목 미입력 시 '붙여넣기'.
   function onAddText() {
     const full = refText.trim();
     if (!full) return;
     const text = full.slice(0, REF_MAX_CHARS);
+    const label = refTitle.trim() || '붙여넣기';
     setReferences((p) => [
       ...p,
-      { id: crypto.randomUUID(), kind: 'text', label: '붙여넣기', text, status: 'ok', truncated: full.length > REF_MAX_CHARS },
+      { id: crypto.randomUUID(), kind: 'text', label, text, status: 'ok', truncated: full.length > REF_MAX_CHARS },
     ]);
     setRefText('');
+    setRefTitle('');
   }
 
   const onRemoveRef = (id: string) => setReferences((p) => p.filter((r) => r.id !== id));
+
+  // ⑨ 썸네일 제거 — visuals[]에서 빼면 effect 가 미리보기 URL 재생성. ref 비주얼은 Dexie 레코드도 정리.
+  async function onRemoveVisual(i: number) {
+    const v = visuals[i];
+    setVisuals((prev) => prev.filter((_, n) => n !== i));
+    setImgMsg('');
+    if (v?.data.kind === 'ref') {
+      try {
+        await dexieRecordStore.delete(v.data.id);
+      } catch {
+        /* 레코드 없거나 이미 지워짐 — 미리보기 제거만으로 충분 */
+      }
+    }
+  }
 
   // 참조 바구니 → 프롬프트 [참고 자료] 문자열. 준비된(ok) 항목만, 출처(링크 제목/파일명) 머리말 부여.
   function buildReference(): string | undefined {
@@ -349,6 +370,7 @@ export function App() {
     setPhase('generating');
     setProgress('생성 중…');
     setSections([]); // 재생성 → 이전 소제목/이미지 패널 초기화(실패해도 stale 패널 방지)
+    setComboPrompt(''); // 합성했던 프롬프트 초안도 폐기(소제목 바뀜)
     setVisuals([]);
     setImgProgress('');
     setHasPayload(false); // 새 생성 시작 → 이전 페이로드 무효(생성 실패 시 삽입 버튼 안 보이게)
@@ -445,24 +467,44 @@ export function App() {
   const toggleSelAll = () =>
     setImgSel((p) => (p.size === sections.length ? new Set() : new Set(sections.map((_, i) => i))));
 
-  // ⑨ Gemini 프롬프트 — 선택 소제목의 본문 전문(요약 안 함)을 맥락으로 넘긴다.
-  // 이미지 모델은 긴 산문을 잘 못 다루므로 '무엇을 그릴지' 지시를 앞에 명확히 두고 본문은 뒤에 붙인다.
-  // 본문이 매우 길면 Quill 주입·이미지 품질 보호를 위해 GEMINI_CTX_MAX 까지만(초과분은 잘림).
-  function buildGeminiPrompt(s: H2Section): string {
-    const body = s.text.slice(0, GEMINI_CTX_MAX);
-    const extra = imgPrompt.trim();
-    const lines = [
-      `다음은 한국어 블로그 글의 한 섹션이야. 소제목: "${s.caption}".`,
-      '이 섹션 본문 내용을 가장 잘 표현하는 일러스트/썸네일 이미지 1장을 만들어줘.',
-      '조건: 이미지 안에 글자·텍스트는 넣지 말 것, 단순하고 밝은 배경, 가로형.',
+  // ⑨ 본문 요약 로컬 폴백(LLM 실패/미실행 시) — 선택 소제목 캡션 나열. 스타일은 미포함.
+  function buildFallbackSummary(): string {
+    return [...imgSel]
+      .sort((a, b) => a - b)
+      .map((i) => `- ${sections[i]!.caption}`)
+      .join('\n');
+  }
+
+  // ⑨ Gemini 전송용 최종 프롬프트 조립 — [기본 지시(방향)] + [본문 요약] + (맨 아래 구분) [스타일/지시].
+  // 본문 요약과 스타일을 구분선으로 분리해 모델이 둘을 헷갈리지 않게 한다.
+  function buildFinalPrompt(): string {
+    const summary = comboPrompt.trim() || buildFallbackSummary();
+    const parts = [
+      `아래 본문 요약의 모든 내용을 담은 이미지 1장을 만들어줘. 방향: ${ORIENT_LABEL[imgOrient]}.`,
+      '',
+      '[본문 요약]',
+      summary,
     ];
-    if (extra) lines.push(`추가 요청: ${extra}`);
-    lines.push('', '[섹션 본문]', body);
-    return lines.join('\n');
+    const style = imgStyle.trim();
+    if (style) parts.push('', '────────', '[스타일·지시]', style);
+    return parts.join('\n');
+  }
+
+  // ⑨ 선택 소제목 전체 → 본문 요약 초안 합성(background image.prompt = 텍스트 LLM).
+  // 실패하면 캡션 폴백을 채워 사용자가 편집/전송할 수 있게 한다.
+  async function onBuildPrompt() {
+    if (promptBusy || imgSel.size === 0) return;
+    setPromptBusy(true);
+    const picked = [...imgSel].sort((a, b) => a - b);
+    const res = await sendCmd<ImagePromptReq, ImagePromptRes>('image.prompt', {
+      sections: picked.map((i) => sections[i]!),
+    });
+    setComboPrompt(res.ok && res.value.prompt.trim() ? res.value.prompt.trim() : buildFallbackSummary());
+    setPromptBusy(false);
   }
 
   // ⑨ 선택한 소제목으로 이미지 생성. 결과 Visual 은 visuals[]에 합류 → 기존 미리보기·수동 삽입 경로 재사용.
-  // 기본 카드: 한 번에 일괄(Canvas). Gemini 웹: 반자동이라 소제목마다 사용자가 전송 → 순차 1개씩 처리.
+  // 기본 카드: 소제목당 1:1 카드 일괄(Canvas). Gemini 웹: 선택 소제목 전체를 결합한 1장(반자동 1회 전송).
   async function onComposeImages() {
     if (imgBusy || imgSel.size === 0) return;
     const picked = [...imgSel].sort((a, b) => a - b);
@@ -483,28 +525,22 @@ export function App() {
         setImgProgress(res.error.message);
       }
     } else {
-      // Gemini 웹 — 순차 1개씩. 각 소제목마다 Gemini 화면에서 사용자가 직접 전송해야 한다(반자동).
-      let done = 0;
-      const fails: string[] = [];
-      for (let n = 0; n < picked.length; n++) {
-        const s = sections[picked[n]!]!;
-        setImgProgress(`Gemini ${n + 1}/${picked.length} — "${s.caption}" : Gemini 화면에서 전송하세요…`);
-        const res = await sendCmd<GeminiRunReq, GeminiRunRes>('gemini.run', {
-          prompt: buildGeminiPrompt(s),
-          autoSend: false, // 반자동 — 사용자가 Gemini 화면에서 최종 전송
-          role: 'H2_THUMB',
-          h2Caption: s.caption,
-        });
-        if (res.ok) {
-          setVisuals((prev) => [...prev, res.value.visual]);
-          done++;
-        } else {
-          fails.push(`${s.caption}: ${res.error.message}`);
-        }
+      // Gemini 웹 — 선택 소제목 전체를 결합한 1장(반자동: 사용자가 Gemini 화면에서 직접 전송).
+      const prompt = buildFinalPrompt();
+      const caps = picked.map((i) => sections[i]!.caption);
+      setImgProgress(`Gemini — "${caps.join(' · ')}" : Gemini 화면에서 전송하세요…`);
+      const res = await sendCmd<GeminiRunReq, GeminiRunRes>('gemini.run', {
+        prompt,
+        autoSend: false, // 반자동 — 사용자가 Gemini 화면에서 최종 전송
+        role: 'H2_THUMB',
+        h2Caption: caps.join(' · '),
+      });
+      if (res.ok) {
+        setVisuals((prev) => [...prev, res.value.visual]);
+        setImgProgress('Gemini 이미지 1장 생성됨. 아래에서 골라 삽입하세요.');
+      } else {
+        setImgProgress(res.error.message);
       }
-      setImgProgress(
-        `Gemini 완료 — 성공 ${done}/${picked.length}${fails.length ? ` · 실패: ${fails.join(' / ')}` : ''}`,
-      );
     }
     setImgBusy(false);
   }
@@ -524,7 +560,7 @@ export function App() {
         </button>
       </header>
 
-      <main className="flex-1 space-y-4 overflow-y-auto p-4">
+      <main className="flex-1 space-y-4 overflow-x-hidden overflow-y-auto p-4">
         <div>
           {/* ② 주제 선정 — 키워드(검색량+연관) / 블로그 제목 */}
           <div className="mb-2 flex gap-1">
@@ -656,7 +692,7 @@ export function App() {
         </div>
 
         {/* 참조 바구니 — 첨부파일·링크를 모아 글 생성 시 [참고 자료] 로 동반. 두 컴포넌트로 분리. */}
-        <fieldset className="space-y-3 rounded border p-2">
+        <fieldset className="min-w-0 space-y-3 rounded border p-2">
           <legend className="px-1 text-xs text-gray-500">참조 자료 (선택)</legend>
 
           {/* 첨부파일 — 텍스트·PDF·docx·hwpx 본문 추출 */}
@@ -666,7 +702,7 @@ export function App() {
               type="file"
               multiple
               accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.xml,.log,.yaml,.yml,.pdf,.docx,.hwpx,text/*,application/pdf"
-              className="block w-full text-xs file:mr-2 file:rounded file:border file:bg-gray-50 file:px-2 file:py-1 file:text-xs"
+              className="block w-full min-w-0 text-xs file:mr-2 file:rounded file:border file:bg-gray-50 file:px-2 file:py-1 file:text-xs"
               onChange={(e) => {
                 void onAddFiles(e.target.files);
                 e.target.value = ''; // 같은 파일 재선택 허용
@@ -701,11 +737,17 @@ export function App() {
             <RefList items={references.filter((r) => r.kind === 'link')} onRemove={onRemoveRef} />
           </div>
 
-          {/* 텍스트 붙여넣기 — 한도 초과분이나 핵심만 직접 입력 */}
+          {/* 텍스트 붙여넣기 — 한도 초과분이나 핵심만 직접 입력. 제목(선택)으로 목록에서 구분. */}
           <div className="space-y-1">
             <label className="block text-[11px] font-medium text-gray-500">텍스트 붙여넣기</label>
+            <input
+              className="w-full rounded border px-2 py-1 text-xs"
+              placeholder="제목 (선택) — 미입력 시 '붙여넣기'"
+              value={refTitle}
+              onChange={(e) => setRefTitle(e.target.value)}
+            />
             <textarea
-              className="h-16 w-full rounded border px-2 py-1 text-xs"
+              className="h-16 w-full resize-none rounded border px-2 py-1 text-xs"
               placeholder="참고할 내용을 직접 붙여넣기 (긴 자료는 핵심만)"
               value={refText}
               onChange={(e) => setRefText(e.target.value)}
@@ -727,7 +769,7 @@ export function App() {
         </fieldset>
 
         {/* ⑩ 키워드 밀도(WP2) — 항상 표시(최소 크기→데이터 시 확장). 검사는 에디터 삽입 후(done)에만. R-8.2 */}
-        <fieldset className="space-y-2 rounded border p-2">
+        <fieldset className="min-w-0 space-y-2 rounded border p-2">
           <legend className="px-1 text-xs text-gray-500">키워드 밀도</legend>
           <div className="flex gap-2">
             <input
@@ -817,7 +859,7 @@ export function App() {
         </fieldset>
 
         {/* 부가요소 (선택) — 09 S3. 켜진 항목만 마커 emit + 합성 */}
-        <fieldset className="space-y-2 rounded border p-3">
+        <fieldset className="min-w-0 space-y-2 rounded border p-3">
           <legend className="px-1 text-xs text-gray-500">부가요소 (선택)</legend>
 
           <ExtraRow
@@ -884,7 +926,7 @@ export function App() {
 
         {/* ⑨ 이미지 — 생성 후 소제목을 골라 기본 카드/Gemini 웹으로 생성. 결과는 아래 썸네일에 합류. */}
         {sections.length > 0 && (
-          <fieldset className="space-y-2 rounded border p-2">
+          <fieldset className="min-w-0 space-y-2 rounded border p-2">
             <legend className="px-1 text-xs text-gray-500">🖼 이미지 (소제목 선택)</legend>
 
             {/* 방식 — 기본 카드(Canvas) / Gemini 웹(반자동) */}
@@ -935,13 +977,6 @@ export function App() {
                       />
                       <span className="min-w-0 flex-1">
                         <span className="text-gray-400">{i + 1}.</span> {s.caption}
-                        <span className="ml-1 text-[10px] text-gray-400">
-                          (본문 {s.text.length.toLocaleString()}자
-                          {imgMode === 'GEMINI' && s.text.length > GEMINI_CTX_MAX
-                            ? ` · ${GEMINI_CTX_MAX.toLocaleString()}자까지만 전달`
-                            : ''}
-                          )
-                        </span>
                       </span>
                     </label>
                   </li>
@@ -952,17 +987,61 @@ export function App() {
             {imgMode === 'GEMINI' ? (
               <>
                 <p className="text-[11px] text-gray-400">
-                  gemini.google.com 에 로그인한 탭을 열어 두세요. 선택한 소제목의 <b>본문 전문</b>(최대{' '}
-                  {GEMINI_CTX_MAX.toLocaleString()}자)이 맥락으로 함께 전달됩니다. 소제목마다 Gemini 화면에서
-                  직접 전송 → 자동으로 가져옵니다(한 번에 하나씩).
+                  gemini.google.com 에 로그인한 탭을 열어 두세요. 선택한 소제목 <b>전체를 하나의 이미지</b>로
+                  만듭니다. 아래에서 본문 요약·스타일을 정하고 Gemini 화면에서 <b>직접 전송</b>하면 자동으로
+                  가져옵니다.
                 </p>
+                {/* 방향 — 가로형/세로형. 전송 직전 기본 지시에 박힌다. */}
+                <div className="flex items-center gap-3 text-xs text-gray-500">
+                  <span className="shrink-0">방향</span>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      name="imgOrient"
+                      checked={imgOrient === 'LANDSCAPE'}
+                      onChange={() => setImgOrient('LANDSCAPE')}
+                    />
+                    가로형
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="radio"
+                      name="imgOrient"
+                      checked={imgOrient === 'PORTRAIT'}
+                      onChange={() => setImgOrient('PORTRAIT')}
+                    />
+                    세로형
+                  </label>
+                </div>
+                {/* 본문 요약 — LLM 합성(본문 내용에만 충실) + 편집. 스타일은 미포함. */}
+                <button
+                  className="w-full rounded border py-1 text-xs disabled:opacity-50"
+                  onClick={onBuildPrompt}
+                  disabled={promptBusy || imgSel.size === 0}
+                  type="button"
+                >
+                  {promptBusy ? '본문 요약 중…' : '✨ 본문 요약 만들기'}
+                </button>
                 <textarea
-                  className="w-full resize-y rounded border p-2 text-xs"
-                  rows={2}
-                  placeholder="추가 프롬프트(선택) — 예) 파스텔톤, 미니멀 / 소제목 맥락은 자동 첨부"
-                  value={imgPrompt}
-                  onChange={(e) => setImgPrompt(e.target.value)}
+                  className="w-full resize-y rounded border p-1.5 text-xs"
+                  rows={5}
+                  placeholder="선택 소제목의 본문 요약. ‘본문 요약 만들기’로 채우거나 직접 작성하세요. (스타일은 아래에)"
+                  value={comboPrompt}
+                  onChange={(e) => setComboPrompt(e.target.value)}
                 />
+                {/* 스타일/지시 — 유저 자유 프롬프팅. 전송 시 본문 요약 아래에 구분선으로 분리 삽입. */}
+                <textarea
+                  className="w-full resize-y rounded border p-1.5 text-xs"
+                  rows={2}
+                  placeholder="이미지 스타일·지시 — 예) 인포그래픽, 파스텔톤, 차트·아이콘, 미니멀 플랫 (본문 요약과 분리되어 맨 아래 삽입)"
+                  value={imgStyle}
+                  onChange={(e) => setImgStyle(e.target.value)}
+                />
+                {/* 첨부는 코드로 넣지 않음 — 사용자가 Gemini 화면에서 직접 첨부(안내). */}
+                <p className="rounded bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                  📎 참고 파일·이미지가 있으면 <b>Gemini 화면에서 직접 첨부</b>한 뒤 전송하세요. (확장은 위
+                  프롬프트만 입력합니다)
+                </p>
               </>
             ) : (
               <>
@@ -1006,7 +1085,7 @@ export function App() {
                   ? '생성 중… (Gemini에서 전송하세요)'
                   : '생성 중…'
                 : imgMode === 'GEMINI'
-                  ? `🎨 선택한 ${imgSel.size}개 Gemini로 생성`
+                  ? `🎨 선택 ${imgSel.size}개 → 이미지 1장 (Gemini)`
                   : `🖼 선택한 ${imgSel.size}개 카드 생성`}
             </button>
             {imgProgress && <p className="text-xs text-gray-500">{imgProgress}</p>}
@@ -1015,7 +1094,7 @@ export function App() {
 
         {/* ⑨ 비주얼 미리보기(WP4/WP8) — 생성 썸네일. 자동 삽입 안 함, 골라서 커서에 수동 삽입. */}
         {thumbUrls.length > 0 && (
-          <fieldset className="space-y-2 rounded border p-2">
+          <fieldset className="min-w-0 space-y-2 rounded border p-2">
             <legend className="px-1 text-xs text-gray-500">썸네일 ({thumbUrls.length}) · 골라서 삽입</legend>
             <p className="text-[11px] text-gray-400">
               에디터에서 넣을 위치를 클릭한 뒤 아래 “삽입”을 누르세요.
@@ -1027,14 +1106,25 @@ export function App() {
                   <figcaption className="truncate px-1 pt-0.5 text-[10px] text-gray-500">
                     {visuals[i]?.h2Caption ?? ''}
                   </figcaption>
-                  <button
-                    className="w-full border-t py-1 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                    onClick={() => onInsertImage(i)}
-                    disabled={imgInserting !== null}
-                    type="button"
-                  >
-                    {imgInserting === i ? '삽입 중…' : '＋ 삽입'}
-                  </button>
+                  <div className="flex border-t">
+                    <button
+                      className="flex-1 py-1 text-[11px] text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                      onClick={() => onInsertImage(i)}
+                      disabled={imgInserting !== null}
+                      type="button"
+                    >
+                      {imgInserting === i ? '삽입 중…' : '＋ 삽입'}
+                    </button>
+                    <button
+                      className="shrink-0 border-l px-2 py-1 text-sm font-semibold text-red-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                      onClick={() => onRemoveVisual(i)}
+                      disabled={imgInserting !== null}
+                      type="button"
+                      title="이 썸네일 삭제"
+                    >
+                      🗑
+                    </button>
+                  </div>
                 </figure>
               ))}
             </div>
@@ -1091,14 +1181,14 @@ function RefList(props: { items: RefItem[]; onRemove: (id: string) => void }) {
   return (
     <ul className="space-y-1">
       {props.items.map((r) => (
-        <li key={r.id} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
+        <li key={r.id} className="flex min-w-0 items-center gap-2 rounded border px-2 py-1 text-xs">
           <span className="shrink-0 text-gray-400">
             {r.kind === 'link' ? '🔗' : r.kind === 'file' ? '📄' : '📝'}
           </span>
           <span className="min-w-0 flex-1 truncate" title={r.label}>
             {r.status === 'loading' ? '불러오는 중…' : r.label}
           </span>
-          <span className="shrink-0 text-[10px]">
+          <span className="min-w-0 shrink truncate text-[10px]">
             {r.status === 'ok' ? (
               <span className={r.truncated ? 'text-amber-600' : 'text-gray-400'}>
                 {r.text.length.toLocaleString()}자{r.truncated ? ' (잘림)' : ''}

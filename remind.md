@@ -2,7 +2,7 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-13 / 브랜치 `main` / HEAD `f0586f6` (+ Gemini 웹 반자동 — 이 커밋에 반영).
+마지막 갱신: 2026-06-14 / 브랜치 `main` / HEAD `081779a` 다음 커밋(이미지 생성 재설계 + 참조 UI 수정 — 이 커밋에 반영).
 
 > ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
 >
@@ -30,7 +30,7 @@
 | WP1 | HTML↔MD 변환(marked/turndown), 마커 보존, SmartEditor 제목 입력 | ✅ |
 | WP2 | 키워드 밀도(경량 카운트, Kiwi 형태소는 보류) + 자동 검사 UI | ✅ |
 | WP3 | ~~찾기·바꾸기~~ | ❌ 제거(에디터 기본 기능과 중복) |
-| WP4 | ⑨ 비주얼 생성 — H2 썸네일(기본 Canvas + Gemini 웹) | 🟡 소제목 **선택식 이미지 패널 통합 완료**(기본카드/Gemini 웹, 생성 후 골라서) / H1 대표·본문 IMG 슬롯 ⬜ |
+| WP4 | ⑨ 비주얼 생성 — H2 썸네일(기본 Canvas + Gemini 웹) | 🟡 **선택 소제목 전체→1장**(Gemini, 본문요약 레이아웃 명세+스타일+방향) / 기본카드(소제목당 1:1) / H1 대표·본문 IMG 슬롯 ⬜ |
 | WP5 | ⑨ 중복 회피(1px 노이즈) + 압축(품질 슬라이더) + 용량 미터 | ✅ |
 | WP6 | ⑨ 모델/캐릭터 일관성(참조 이미지 동반) | ⬜ |
 | WP7 | 정합성 확장(`validate.ts` H2↔H2THUMB) | ✅ 축소판(R-7.3 안전망만, 이미지 opt-in 으로 R-7.6 폐기) |
@@ -40,7 +40,24 @@
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
 
-### 2026-06-13 작업 (이미지 생성 UX 통합 — 이번 세션)
+### 2026-06-14 작업 (이미지 생성 재설계 + 참조 UI 수정 — 이번 세션)
+
+⑨ Gemini 이미지 흐름을 **"선택 소제목 전체 → 1장"** 으로 재설계하고, 정보성 블로그용 레이아웃을 LLM 으로 구조화. 참조 자료 UI 자잘한 버그도 수정.
+
+1. **결합 1장(요구1)** — 기존 소제목당 순차 N장 → **선택 소제목 전체를 한 프롬프트로 묶어 Gemini 1회 요청**. `onComposeImages` GEMINI 분기를 단일 `gemini.run`(h2Caption=캡션들 `·` 결합)으로. 기본 카드 모드는 그대로(소제목당 1:1).
+2. **본문 요약 = 인포그래픽 레이아웃 명세(요구2)** — `distillImagePrompts`(소제목별 증류) **폐기** → `composeImagePrompt`(generator). 선택 소제목들을 **인포그래픽 레이아웃 명세 마크다운**으로 구조화하는 텍스트 LLM 1회. 형식 적중률을 위해 **골격(skeleton) + 퓨샷 예시 + 분기 규칙**(구간·등급→표/막대차트, 절차→플로우, 단일값→강조 라벨)을 프롬프트에 함께 박음. 본문 숫자·구간 그대로 보존, 색·폰트·톤 등 스타일 지시는 배제(스타일 필드가 따로 담당). 실패 시 빈 문자열 → 패널 로컬 폴백(캡션 나열).
+3. **역할 분리 UI(요구2·3)** — Gemini 패널을 셋으로 분리:
+   - **본문 요약** textarea(`✨ 본문 요약 만들기` 버튼 = `image.prompt` 채널 → `handleImagePrompt`). 편집 가능, 스타일 미포함.
+   - **스타일·지시** textarea — 유저가 이미지 스타일 전부 자유 프롬프팅. 전송 시 **본문 요약 아래에 구분선(`────────`)으로 분리** 삽입(`buildFinalPrompt`).
+   - **방향 라디오**(가로형/세로형, `imgOrient`) → 기본 지시 "아래 본문 요약의 모든 내용을 담은 이미지 1장… 방향: X" 에 박힘.
+   - 종류 드롭다운(인포그래픽/일러스트)은 "스타일 필드가 모든 스타일 담당" 과 중복 → **제거**. `ImageKind`·`GEMINI_CTX_MAX`·`H2Section.imagePrompt` 도 삭제.
+4. **파일 첨부 = 수동(요구3)** — 코드 파일첨부 안 함. 본문 요약이 이미 텍스트로 들어가고, **참고 파일·이미지는 사용자가 Gemini 화면에서 직접 첨부**(패널에 안내 배너). 참조 바구니 선택 UI 불필요.
+5. **썸네일 삭제** — 썸네일 카드에 `🗑`(`onRemoveVisual`): `visuals[]`에서 제거(effect 가 미리보기 objectURL 재생성·해제) + ref 비주얼은 **Dexie 레코드도 삭제**(용량 회수).
+6. **참조 UI 수정** — (a) 텍스트 붙여넣기에 **제목 입력**(`refTitle`, 미입력 시 '붙여넣기'). (b) 텍스트 textarea `resize-none`(드래그 확장 방지). (c) **참조 fieldset 최소폭에서 잘림 버그 해결**: 진짜 원인 = `<fieldset>` UA 기본 `min-width: min-content`(블록과 달리 콘텐츠 최소폭 밑으로 안 줄어듦) → 패널 좁히면 fieldset 이 패널보다 넓어져 `overflow-x-hidden` 이 테두리째 잘랐음. **모든 fieldset에 `min-w-0`**(작성자 스타일이 UA 우선) + `<main>` `overflow-x-hidden` 가드 + 파일 input `min-w-0` + RefList 행 글자수칸 `shrink truncate`.
+7. ⚠️ **빌드 주의 재확인** — 프롬프트/UI 수정 후 `npm run build` 안 하면 prod 빌드(`.output/chrome-mv3`)에 반영 안 됨. tsc·테스트만으론 빌드 안 됨(이번 세션 한 번 빠뜨려 "산문 덩어리" 오인 발생).
+8. 핵심 파일: `App.tsx`(이미지 패널 재구성·썸네일 삭제·참조 UI), `generator/index.ts`(`composeImagePrompt`), `background.ts`(`handleImagePrompt`·`image.prompt` 라우팅), `messaging.ts`(`ImagePromptReq`/`Res`, `image.prompt` 채널, `H2Section.imagePrompt` 제거), `tests/visual.test.ts`. 검증: tsc 0, 테스트 78 pass, prod 빌드 OK. **브라우저 실측**: 참조 잘림 수정은 확인됨 / 이미지 레이아웃 명세가 Gemini 웹서 깔끔히 렌더되는지는 미확인(라이브 필요).
+
+### 2026-06-13 작업 (이미지 생성 UX 통합 — 이전 세션)
 
 ⑨ 이미지 진입점을 **하나로 통합**. 기존엔 (1) 부가요소의 "소제목 썸네일 자동 생성"(전체 H2 일괄) + (2) 별도 "Gemini 웹 이미지"(자유 프롬프트 1장)로 **갈라져** 있었음. → **생성 후 단일 "🖼 이미지 (소제목 선택)" 패널**로 합침.
 
@@ -56,7 +73,7 @@
 
 7. **삽입 실패 시 임시저장 버튼 유지** — 버튼 노출 조건이 `phase==='generated'|'inserting'|'done'` 이라 삽입 실패(`phase='error'`)면 버튼이 사라져 **매 실패마다 글을 새로 생성**해야 했음. → `hasPayload` 상태 도입(생성 성공 시 true, 새 생성 시작 시 false). 버튼 조건을 `hasPayload && phase!=='generating'` 으로 바꿔 **실패해도 버튼 유지·재시도**(라벨 "↻ 다시 삽입"). `payloadId.current` 도 생성 시작 시 null 로 비워 생성 실패 시엔 버튼 안 뜨게.
 
-8. **Gemini 이미지 프롬프트 = 소제목 본문 전문 전달** — 기존 `buildGeminiPrompt` 가 `s.text.slice(0,300)`(앞 300자 절단)만 넘겨 맥락이 빈약했음. → **본문 전문**을 넘기도록 변경(`GEMINI_CTX_MAX`=4,000자 안전 상한까지, `extractH2Sections` 가 이미 소제목 사이 전문을 뽑아둠). 프롬프트 구조도 이미지 모델 친화적으로: **지시(무엇을 그릴지)를 앞, `[섹션 본문]`을 뒤**. 패널 소제목 행에 `(본문 N자)` + 상한 초과 시 경고 표시. ⚠️ **알려진 위험**(미해결, 길어지면 발현): (1) **Quill 주입 신뢰도** — `setPrompt`(gemini.content.ts)의 `paste→textContent.includes(text) 검증→폴백`이 긴 본문에서 Quill 재구성으로 검증 실패해 부분만 들어갈 수 있음(짧은 프롬프트만 라이브 검증됨). (2) **이미지 모델은 장문 이해 약함** → 전문 전달은 충실도↑ vs 이미지 품질↓ 트레이드오프. (3) 표·리스트가 평문으로 뭉개짐(노이즈). 대응 후보: `setPrompt` 견고화 / 본문을 요약·첨부로 동반(WP6 연계).
+8. ~~**Gemini 이미지 프롬프트 = 소제목 본문 전문 전달**~~ → **2026-06-14 폐기**: 본문 전문 직송은 이미지 모델 장문 약점·Quill 주입 위험이 컸음. 대신 텍스트 LLM 으로 **인포그래픽 레이아웃 명세(요약+구조화)** 를 만들어 짧게 넘기는 방식으로 교체(`composeImagePrompt`). `GEMINI_CTX_MAX` 삭제. (아래 옛 내용은 히스토리) — 기존 `buildGeminiPrompt` 가 `s.text.slice(0,300)`(앞 300자 절단)만 넘겨 맥락이 빈약했음. → **본문 전문**을 넘기도록 변경(`GEMINI_CTX_MAX`=4,000자 안전 상한까지, `extractH2Sections` 가 이미 소제목 사이 전문을 뽑아둠). 프롬프트 구조도 이미지 모델 친화적으로: **지시(무엇을 그릴지)를 앞, `[섹션 본문]`을 뒤**. 패널 소제목 행에 `(본문 N자)` + 상한 초과 시 경고 표시. ⚠️ **알려진 위험**(미해결, 길어지면 발현): (1) **Quill 주입 신뢰도** — `setPrompt`(gemini.content.ts)의 `paste→textContent.includes(text) 검증→폴백`이 긴 본문에서 Quill 재구성으로 검증 실패해 부분만 들어갈 수 있음(짧은 프롬프트만 라이브 검증됨). (2) **이미지 모델은 장문 이해 약함** → 전문 전달은 충실도↑ vs 이미지 품질↓ 트레이드오프. (3) 표·리스트가 평문으로 뭉개짐(노이즈). 대응 후보: `setPrompt` 견고화 / 본문을 요약·첨부로 동반(WP6 연계).
 
 > ⚠️ **참고**: 부가요소 fieldset 에서 썸네일 블록 제거, 별도 Gemini fieldset 제거. `settings.aiImageCredential`/`gemini-image.ts`(유료 API)는 이제 어디서도 호출 안 함(파일은 잔존, 사실상 죽은 코드).
 
@@ -165,8 +182,8 @@
 ## 다음 할 일 (우선순위 제안)
 
 1. **Gemini 웹 반자동 스파이크** ✅ 동작 확인 — 라이브 검증 통과: 입력 주입(#2/#8 격리월드 OK), blob 스크랩(#5/#9), 완료 판정(#4). **삽입경로 합류까지 배선 완료**: 사이드패널 "Gemini 웹 이미지(반자동)" 블록(프롬프트+버튼) → `gemini.run` → BG `handleGeminiRun`(CS 운전 → dataUrl → `dexieRecordStore.put` → `Visual{role,source:'AI',data:{kind:'ref',id}}`) → 사이드패널 `visuals[]` 합류 → 썸네일 미리보기 → 기존 `image.insert` 커서 삽입. 완료 신호는 img `loaded` 클래스(주의: `image-loading-overlay` 는 완료 후에도 DOM 잔존 → 존재 여부로 판정 금지). 핵심 파일: `entrypoints/gemini.content.ts`, `forwardToGemini`/`handleGeminiRun`(background), `GEMINI`/`GEMINI_DEFAULTS`(selectors).
-   - ✅ **소제목 선택식 패널로 통합 완료(2026-06-13)**: H2 썸네일 루프 ↔ Gemini 웹 소스 연결 = 생성 후 "🖼 이미지" 패널에서 소제목 다중 선택 → 기본카드 일괄 / Gemini 웹 순차 1개씩(반자동 특성상 캡션당 사용자 전송). 위 "2026-06-13 작업" 참조.
-   - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단, autoSend 자동전송 쓸 때만 실측 필요). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
+   - ✅ **결합 1장 + 레이아웃 명세로 재설계(2026-06-14)**: 생성 후 "🖼 이미지" 패널 GEMINI 모드 = 소제목 다중 선택 → **전체를 1장**으로. 본문요약(`composeImagePrompt` = 인포그래픽 레이아웃 명세) + 스타일 필드(구분선 분리) + 방향 라디오 → `buildFinalPrompt` 조립 → `gemini.run` 1회. 파일 첨부는 사용자가 Gemini 화면서 수동(안내). 위 "2026-06-14 작업" 참조.
+   - **남은 것**: 이미지 레이아웃 명세의 Gemini 웹 렌더 품질 **라이브 실측 미확인**. (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
 2. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
 3. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
 4. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).

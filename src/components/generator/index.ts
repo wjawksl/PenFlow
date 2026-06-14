@@ -96,6 +96,69 @@ export function extractH2Sections(html: string): Array<{ caption: string; text: 
   });
 }
 
+// 요약 호출에 넘기는 섹션 본문 발췌 상한(글자/섹션). 텍스트 LLM 요약 입력이라 넉넉히.
+const IMG_SRC_MAX = 700;
+
+/**
+ * 선택한 소제목들(캡션+본문)을 인포그래픽 "레이아웃 명세"로 구조화(텍스트 LLM 1회).
+ * 섹션마다 제목 → 핵심 수치 라벨 → 데이터 성격별 시각요소(표/차트/플로우)로 일정한 골격을 강제 —
+ * 형식을 공통 템플릿처럼 재사용하기 위해 골격 + 퓨샷 예시 + 분기 규칙을 함께 준다(R-내용독립).
+ * 내용 구조화에만 충실 — 색·폰트·톤 같은 스타일 지시는 넣지 않는다(그건 사용자 스타일 필드 몫).
+ * 실패해도 본문 생성과 분리 — 빈 문자열 폴백.
+ */
+export async function composeImagePrompt(
+  sections: Array<{ caption: string; text: string }>,
+  adapter: AITextAdapter,
+  credential: Credential,
+  model: string,
+): Promise<string> {
+  if (sections.length === 0) return '';
+
+  const list = sections
+    .map((s, i) => `${i + 1}. ${s.caption} — ${s.text.slice(0, IMG_SRC_MAX)}`)
+    .join('\n');
+  const prompt = [
+    '아래는 한국어 정보성 블로그 글의 소제목별 섹션이야. 이걸 인포그래픽 이미지로 그리기 위한 "레이아웃 명세"를 마크다운으로 작성해줘.',
+    '각 소제목을 하나의 섹션 블록으로 만들고, 다음 골격을 반드시 따른다:',
+    '',
+    '## {번호}. {소제목을 다듬은 짧은 주제}',
+    '- 제목: "{독자에게 묻는 듯한 한 줄 제목}"',
+    '- 핵심 수치·사실을 짧은 "라벨"로 나열(아이콘과 함께 표시될 것).',
+    '- 데이터 성격에 맞는 시각 요소를 골라 명시:',
+    '  - 구간·등급·비교 수치 → 막대 차트 또는 표(각 항목을 "키: 값" 라벨로).',
+    '  - 절차·단계 → 단계별 플로우 차트("1단계: …", "2단계: …").',
+    '  - 단일 핵심 수치 → 강조 라벨.',
+    '',
+    '예시(형식만 참고, 내용 무시):',
+    '## 1. 혜택 요약',
+    '- 제목: "이 제도, 어떤 혜택이?"',
+    '- 아이콘과 "최대 OO원 한도" 라벨.',
+    '- 구간별 표:',
+    '  - "A구간: 3.0%"',
+    '  - "B구간: 2.5%"',
+    '## 2. 신청 절차',
+    '- 제목: "신청, 어떻게 하나요?"',
+    '- 단계별 플로우 차트:',
+    '  - "1단계: 상담"',
+    '  - "2단계: 신청"',
+    '',
+    '규칙:',
+    '- 본문에 나온 구체적 숫자·수치·구간·항목은 그대로 보존해 라벨로 옮긴다.',
+    '- 내용 구조화에만 충실. 색·폰트·톤 같은 스타일 지시는 넣지 말 것(따로 처리).',
+    '- 설명·머리말·코드펜스 없이 위 형식의 마크다운만 출력.',
+    '',
+    '[소제목 섹션]',
+    list,
+  ].join('\n');
+
+  const res = await adapter.generate({ prompt, model, credential });
+  if (!res.ok) {
+    progress('generate', `레이아웃 명세 건너뜀: ${res.error.message}`, { level: 'warn' });
+    return '';
+  }
+  return stripWrappers(res.value).trim();
+}
+
 /** 본문에서 제목 추출(07 §7): 첫 H2 텍스트. 없으면 주제 키워드. */
 export function extractTitle(contentHtml: string, fallback: string): string {
   const m = contentHtml.match(/<h2>(.*?)<\/h2>/);

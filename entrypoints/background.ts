@@ -2,7 +2,7 @@
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
 import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
-import { extractH2Sections, generateBody } from '@/components/generator';
+import { composeImagePrompt, extractH2Sections, generateBody } from '@/components/generator';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
 import { analyzeDensity } from '@/components/validator/density';
 import { getActiveCredential, loadSettings } from '@/components/settings';
@@ -24,6 +24,8 @@ import type {
   GenerateReq,
   GenerateRunRes,
   ImageInsertReq,
+  ImagePromptReq,
+  ImagePromptRes,
   InsertStartReq,
   Msg,
   ReferenceFetchReq,
@@ -83,6 +85,11 @@ export default defineBackground(() => {
     if (msg.name === 'gemini.run') {
       // ⑨ Gemini 웹 반자동: 탭 CS 로 운전(입력·전송·스크랩) → dataUrl → Dexie 저장 → Visual 승격.
       handleGeminiRun(msg.payload as GeminiRunReq).then(sendResponse);
+      return true;
+    }
+    if (msg.name === 'image.prompt') {
+      // ⑨ 선택 소제목들 → 1장짜리 이미지 생성 프롬프트 합성(텍스트 LLM, 종류별 규칙).
+      handleImagePrompt(msg.payload as ImagePromptReq).then(sendResponse);
       return true;
     }
     if (msg.name === 'reference.fetch') {
@@ -150,9 +157,20 @@ async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>>
   const id = crypto.randomUUID();
   const payload = buildPayload(id, res.value, 'TEMP_SAVE', req.options, composed.value); // 기본 임시저장(R-5.1)
   await savePayload(payload);
-  // ⑨ 소제목 목록(캡션+섹션 맥락) 동반 → 사이드패널 이미지 패널이 골라 생성.
+  // ⑨ 소제목 목록(캡션+섹션 본문) 동반 → 사이드패널 이미지 패널이 골라 생성.
+  // 프롬프트 합성은 사용자가 소제목·종류를 고른 뒤(image.prompt)에 한다 — 생성 시점엔 목록만 넘긴다.
   const sections = extractH2Sections(res.value);
   return { ok: true, value: { payloadId: id, visuals: [], sections } };
+}
+
+// ⑨ 선택 소제목들 → "본문 요약" 한 덩이로 압축(텍스트 LLM 1회). 스타일·방향은 사이드패널이 조립.
+// 결과는 사이드패널에서 편집 후 Gemini 로 전송된다. 자격증명 없으면 생성과 동일하게 실패 반환.
+async function handleImagePrompt(req: ImagePromptReq): Promise<Result<ImagePromptRes>> {
+  const settings = await loadSettings();
+  const credential = getActiveCredential(settings);
+  if (!credential) return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
+  const prompt = await composeImagePrompt(req.sections, geminiTextAdapter, credential, settings.aiModel);
+  return { ok: true, value: { prompt } };
 }
 
 // ⑨ 선택 소제목 → 기본 카드(Canvas) 썸네일 합성(M3 WP4). 생성 후 이미지 패널이 호출, offscreen 위임.
