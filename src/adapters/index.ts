@@ -1,7 +1,7 @@
 // 어댑터 인터페이스 단일 출처 — 04·05 §7 + 08 §5. 이식성(비기능).
 // 벤더 교체가 가능하도록 컴포넌트는 아래 인터페이스에만 의존한다.
 import type { BinaryOrRef, Duration, Result } from '@/types/common';
-import type { Credential, ModelReference, Topic } from '@/types/models';
+import type { Credential, Topic } from '@/types/models';
 
 // ── AI 본문 (③) ─ 키 순환·재시도는 상위(오케스트레이터)가 처리, 어댑터는 단일 호출 ──
 export interface AITextAdapter {
@@ -10,15 +10,6 @@ export interface AITextAdapter {
     model: string;
     credential: Credential;
   }): Promise<Result<string>>;
-}
-
-export interface AIImageAdapter {
-  generate(req: {
-    prompt: string;
-    model: string;
-    credential: Credential;
-    modelRef?: ModelReference; // 인물·화풍 일관성 동반(R-7.7, WP6)
-  }): Promise<Result<BinaryOrRef>>;
 }
 
 // ── 외부 이미지 소스 (⑨) ────────────────────────────────────

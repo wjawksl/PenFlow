@@ -5,7 +5,7 @@ import type { BinaryOrRef, Duration, ISODateTime } from './common';
 /** 벤더마다 필드가 달라(검색광고=key/secret/customerId 등) 유연한 형태로 둔다(이식성). */
 export interface Credential {
   id: string;
-  kind: 'ai_text' | 'ai_image' | 'image_source' | 'keyword_tool' | 'affiliate';
+  kind: 'ai_text' | 'image_source' | 'keyword_tool' | 'affiliate';
   label?: string;
   fields: Record<string, string>; // apiKey, secret, customerId 등
 }
@@ -13,8 +13,6 @@ export interface Credential {
 export interface Settings {
   aiTextCredentials: Credential[]; // 복수 등록·한도 초과 시 순환(R-0.1, R-0.2)
   aiModel: string;
-  aiImageCredential?: Credential;
-  aiImageModel?: string; // ⑨ AI 이미지 생성 모델(없으면 DEFAULT_SETTINGS)
   imageSourceCredential?: Credential;
   keywordToolCredential?: Credential;
   affiliateCredential?: Credential;
@@ -65,10 +63,6 @@ export interface Visual {
   h2Caption?: string; // 소제목 썸네일 텍스트
   modelRefApplied?: boolean; // 모델 참조 동반(R-7.7)
 }
-
-export interface ModelReference {
-  image: BinaryOrRef;
-} // 모든 AI 이미지에 동반
 
 // ── 페이로드 (⑤) ────────────────────────────────────────────
 export type PublishOption = 'TEMP_SAVE' | 'PUBLISH'; // 기본 TEMP_SAVE(R-5.1)

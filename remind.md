@@ -40,7 +40,22 @@
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
 
-### 2026-06-14 작업 (이미지 생성 재설계 + 참조 UI 수정 — 이번 세션)
+### 2026-06-14 작업 (죽은 AI 이미지 API 코드 청소 — 이번 세션)
+
+⑨ 이미지 전략을 **유료 API → Gemini 웹 반자동**으로 튼 뒤(2026-06-08~) 남아있던 **유료 Gemini 이미지 API 경로 전부 제거**. 어디서도 호출 안 됐고(가공 안 된 죽은 코드 + options UI에 동작 안 하는 API키 입력칸까지 노출) WP6(인물 일관성)도 정보성 목적상 저우선이라 정리.
+
+- **삭제**: `src/adapters/ai/gemini-image.ts`(파일 통째) · `AIImageAdapter` 인터페이스(`adapters/index.ts`) · `ModelReference` 인터페이스(`models.ts`) · `Settings.aiImageCredential`/`aiImageModel` · `DEFAULT_SETTINGS.aiImageModel` · `setAiImageKey()`(`settings/index.ts`) · `Credential.kind` 의 `'ai_image'` · options UI "AI 이미지 생성 키" 섹션(상태 2개·import·`setAiImageKey` 호출 포함).
+- **남김**: `ImageSourceAdapter`/`imageSourceCredential`(외부 이미지 검색 R-7.5, 별개 미구현 슬롯) — 이번 범위 밖이라 유지. `Visual.modelRefApplied?`(boolean) 도 모델 정의라 유지.
+- ⚠️ **WP6 재개 시**: `ModelReference`·`AIImageAdapter` 다시 추가 필요(현재 이미지 = Gemini 웹 반자동, 참조 이미지는 사용자가 화면서 수동 첨부).
+- 검증: tsc 0, 테스트 79 pass, prod 빌드 OK.
+
+### 2026-06-14 작업 (R-8.4 마커 왕복 전수 테스트 — 이번 세션)
+
+R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫음. 메커니즘(`convert.ts` protect/restore = 마커 → 영숫자 placeholder 치환→변환→복원)은 이미 구현돼 있었고, 기존 왕복 테스트가 **AD/SHOP/CTA 3종만** 커버해 전수 보장이 비어 있었음.
+
+1. **전 마커타입 왕복 테스트 추가**(`tests/convert.test.ts`) — 9개 `MARKER_TYPES`(`H1THUMB H2THUMB IMG PRODUCT SHOP BACKLINK CTA SOURCE AD`) 전부를 **소제목·문단·표·리스트·링크 경계 곳곳**에 박아 HTML→MD→HTML 왕복 → `scan()` 으로 순서·타입·키 불변 검증. turndown/marked 가 어떤 타입도 코드·링크로 오인하거나 블록 경계서 삼키지 않음 확인. 결과: 8 pass(기존 7 + 신규 1). **R-8.4 닫힘**(체크리스트 갱신).
+
+### 2026-06-14 작업 (이미지 생성 재설계 + 참조 UI 수정 — 이전 세션)
 
 ⑨ Gemini 이미지 흐름을 **"선택 소제목 전체 → 1장"** 으로 재설계하고, 정보성 블로그용 레이아웃을 LLM 으로 구조화. 참조 자료 UI 자잘한 버그도 수정.
 
@@ -166,7 +181,6 @@
 | 부가요소 합성(마커→InsertQueue) | `src/components/composer/index.ts` |
 | 합성 정합성 검사 | `src/components/composer/validate.ts` |
 | 비주얼 합성(Canvas) | `src/components/visual/{thumbnail,index}.ts` |
-| AI 이미지 어댑터(Gemini API, 현재 비활성) | `src/adapters/ai/gemini-image.ts` |
 | Gemini 웹 반자동 CS(입력·전송·완료폴링·blob 스크랩) | `entrypoints/gemini.content.ts` |
 | Gemini 웹 라우팅·Dexie 저장·Visual 승격 | `entrypoints/background.ts`(`forwardToGemini`/`handleGeminiRun`) |
 | Gemini 셀렉터·타임아웃 | `src/lib/selectors.ts`(`GEMINI`/`GEMINI_DEFAULTS`) |
@@ -197,7 +211,7 @@
 
 - [x] 밀도 표 + 권장범위 경고(R-8.2) — 경량 카운트로 충족
 - [x] 이미지가 에디터에 삽입(수동) — WP8
-- [ ] HTML↔MD 왕복 후 마커 무손실(R-8.4) — 검증 필요
+- [x] HTML↔MD 왕복 후 마커 무손실(R-8.4) — `convert.test.ts` 전 9개 마커타입 왕복 테스트로 닫힘(2026-06-14)
 - [x] 소제목 N개 글 → H2 썸네일 정확히 N개, 중복회피 시 모두 다른 바이트 (WP5) — 브라우저 실측은 미확인
 - [ ] 모델 참조 등록 시 AI 이미지에 동반 (WP6)
 - [x] H2↔H2THUMB 정합성(R-7.3) — WP7 축소판 (이미지↔Visual R-7.6 은 opt-in 으로 폐기)

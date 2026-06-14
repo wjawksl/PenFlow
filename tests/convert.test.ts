@@ -4,7 +4,7 @@ import {
   markdownToHtml,
   sanitizeHtml,
 } from '@/components/validator/convert';
-import { make, scan } from '@/lib/markers';
+import { make, scan, MARKER_TYPES } from '@/lib/markers';
 
 describe('convert (⑩ WP1)', () => {
   it('Markdown 표/리스트/볼드를 HTML 로 변환한다 (사용자 표 깨짐 해결)', () => {
@@ -22,6 +22,30 @@ describe('convert (⑩ WP1)', () => {
     const round = markdownToHtml(htmlToMarkdown(html));
     expect(scan(round).length).toBe(before);
     expect(scan(round).map((m) => m.type)).toEqual(['AD', 'SHOP', 'CTA']);
+  });
+
+  it('전 마커 타입이 표·리스트·링크 섞인 본문 왕복 후 순서·타입 불변이다 (R-8.4 전수)', () => {
+    // 모든 MarkerType 을 본문 곳곳(소제목/문단/표/리스트 경계)에 박아 turndown/marked 가
+    // 어떤 타입도 코드·링크로 오인하거나 블록 경계에서 삼키지 않음을 보장한다.
+    const mk = MARKER_TYPES.map((t, i) => make(t, String(i)));
+    const html =
+      `<h2>제목${mk[0]}</h2>` +
+      `<p>본문 앞${mk[1]} 가운데 <strong>굵게</strong> ${mk[2]} 뒤</p>` +
+      `${mk[3]}` +
+      `<ul><li>항목 ${mk[4]}</li><li>${mk[5]} 항목</li></ul>` +
+      `<table><thead><tr><th>A</th><th>B</th></tr></thead>` +
+      `<tbody><tr><td>1 ${mk[6]}</td><td>2</td></tr></tbody></table>` +
+      `<p><a href="https://x.test">링크${mk[7]}</a></p>` +
+      `${mk[8]}`;
+    const before = scan(html);
+    expect(before.map((m) => m.type)).toEqual([...MARKER_TYPES]);
+
+    const round = markdownToHtml(htmlToMarkdown(html));
+    const after = scan(round);
+    expect(after.length).toBe(before.length);
+    // 등장 순서·타입·키 모두 보존
+    expect(after.map((m) => m.type)).toEqual(before.map((m) => m.type));
+    expect(after.map((m) => m.key)).toEqual(before.map((m) => m.key));
   });
 
   it('단독 마커 문단은 <p> 로 감싸지 않는다 (compose 슬라이스 안전)', () => {
