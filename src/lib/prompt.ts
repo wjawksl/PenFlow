@@ -38,7 +38,7 @@ function markerInstructions(o?: PayloadOptions): string {
   return ['\n[삽입 지점 마커 규칙] 아래 마커만 지정 위치에 정확히 출력(다른 마커 생성 금지):', ...lines].join('\n');
 }
 
-// M1 기본 프롬프트(프롬프트 라이브러리 R-2.1 은 M2). 사용자가 비우면 이걸 쓴다.
+// 기본 프롬프트 — 라이브러리(R-2.1, prompt-library)에 저장된 게 없을 때의 시드. 사용자가 비우면 이걸 쓴다.
 export const DEFAULT_PROMPT: Prompt = {
   name: '기본',
   body: '주어진 주제로 정보성 네이버 블로그 글을 작성해줘. 소제목으로 단락을 나눠줘.',

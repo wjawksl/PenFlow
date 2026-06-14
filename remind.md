@@ -18,7 +18,7 @@
 | **M2** | ② 주제 선정(검색량/블로그제목/연관검색어) + ④ 부가요소 합성(표·링크·CTA·백링크·광고문구) | ✅ 완료 |
 | **M3** | ⑨ 비주얼(이미지) + ⑩ 검증(변환·밀도) + Offscreen + 이미지 삽입 | 🟡 진행 중 |
 | M4 | ⑧ 연속/예약/간격 자동화 + 발행(PUBLISH) | ⬜ 예정 |
-| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 | ⬜ 예정 |
+| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 | 🟡 프롬프트 라이브러리(R-2.1) ✅ / 복수키·대화형 ⬜ |
 
 ---
 
@@ -39,6 +39,15 @@
 ---
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
+
+### 2026-06-14 작업 (프롬프트 라이브러리 R-2.1 — 이번 세션)
+
+생성 프롬프트를 **이름붙여 저장/불러오기/삭제**(R-2.1). 정보성 글 반복 생성 시 골격 프롬프트 재사용 목적. M5 항목이지만 범위 작고 발행과 독립이라 선구현.
+
+1. **모듈**(`src/components/prompt-library/index.ts`) — `chrome.storage.local` 에 `prompt:<name>` 키(`STORE_KEYS.promptPrefix`, 예약돼 있던 자리). `payload/index.ts` 와 같은 프리픽스 CRUD 패턴. `listPrompts`(이름순 정렬)·`savePrompt`(빈 이름 거부·trim·동명 덮어쓰기)·`deletePrompt`. background 왕복 없이 sidepanel(확장 페이지)에서 직접 호출.
+2. **UI**(`App.tsx` 프롬프트 textarea 위) — 드롭다운(저장된 것 선택 → 본문 채움) + 이름 input + `저장`/`삭제` 버튼 + 결과 메시지. 선택/저장 시 `promptName`·`promptBody` 동기.
+3. **테스트**(`tests/prompt-library.test.ts`) — chrome.storage.local 인메모리 모킹, 5케이스(저장·덮어쓰기·빈이름거부·trim·정렬+삭제).
+4. 검증: tsc 0, 테스트 84 pass(79+5), prod 빌드 OK. **브라우저 실측 미확인**(저장/불러오기 라이브 동작).
 
 ### 2026-06-14 작업 (죽은 AI 이미지 API 코드 청소 — 이번 세션)
 
@@ -186,6 +195,7 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
 | Gemini 셀렉터·타임아웃 | `src/lib/selectors.ts`(`GEMINI`/`GEMINI_DEFAULTS`) |
 | 참조 첨부 추출(PDF·docx·hwpx·텍스트) | `src/components/reference/extract.ts` |
 | 이미지 저장(Dexie) | `src/adapters/storage/record-store.ts` |
+| 프롬프트 라이브러리(저장/불러오기/삭제, R-2.1) | `src/components/prompt-library/index.ts` |
 | HTML↔MD 변환·정제 | `src/components/validator/convert.ts` |
 | 셀렉터·타임아웃 단일 출처 | `src/lib/selectors.ts` |
 | 데이터 모델 | `src/types/{common,models}.ts` |

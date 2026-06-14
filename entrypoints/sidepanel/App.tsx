@@ -2,6 +2,7 @@
 // 입력·표시만 담당, 무거운 로직은 Background(05 §2).
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { loadSettings, setDensityRange } from '@/components/settings';
+import { listPrompts, savePrompt, deletePrompt } from '@/components/prompt-library';
 import type {
   ComposeThumbsReq,
   DensityAnalyzeReq,
@@ -24,7 +25,7 @@ import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { extractFileText } from '@/components/reference/extract';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
 import { dexieRecordStore, refToObjectUrl } from '@/adapters/storage/record-store';
-import type { DensityReport, PayloadOptions, Topic, Visual } from '@/types/models';
+import type { DensityReport, PayloadOptions, Prompt, Topic, Visual } from '@/types/models';
 
 // 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
 const COMP_LABEL: Record<number, string> = { 1: '낮음', 2: '중간', 3: '높음' };
@@ -106,6 +107,9 @@ function buildOptions(e: Extras): PayloadOptions {
 export function App() {
   const [keyword, setKeyword] = useState('');
   const [promptBody, setPromptBody] = useState(DEFAULT_PROMPT.body);
+  const [prompts, setPrompts] = useState<Prompt[]>([]); // 저장된 프롬프트 라이브러리(R-2.1)
+  const [promptName, setPromptName] = useState(''); // 저장/선택 중인 프롬프트 이름
+  const [promptLibMsg, setPromptLibMsg] = useState(''); // 저장/삭제 결과 메시지
   const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(첨부파일·링크·텍스트)
   const [refUrl, setRefUrl] = useState('');
   const [refText, setRefText] = useState('');
@@ -160,6 +164,41 @@ export function App() {
       }
     });
   }, []);
+
+  // 저장된 프롬프트 라이브러리 불러오기(R-2.1).
+  useEffect(() => {
+    listPrompts().then(setPrompts);
+  }, []);
+
+  // 라이브러리에서 프롬프트 선택 → 이름·본문 채움.
+  function onPickPrompt(name: string) {
+    setPromptName(name);
+    setPromptLibMsg('');
+    const p = prompts.find((x) => x.name === name);
+    if (p) setPromptBody(p.body);
+  }
+
+  // 현재 본문을 이름붙여 저장(같은 이름이면 덮어쓰기).
+  async function onSavePrompt() {
+    try {
+      await savePrompt({ name: promptName, body: promptBody });
+      setPrompts(await listPrompts());
+      setPromptName(promptName.trim());
+      setPromptLibMsg('✅ 저장됨');
+    } catch (e) {
+      setPromptLibMsg(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // 선택된 이름의 프롬프트 삭제.
+  async function onDeletePrompt() {
+    const name = promptName.trim();
+    if (!name) return;
+    await deletePrompt(name);
+    setPrompts(await listPrompts());
+    setPromptName('');
+    setPromptLibMsg('🗑 삭제됨');
+  }
 
   useEffect(
     () =>
@@ -684,6 +723,47 @@ export function App() {
         </div>
         <div>
           <label className="mb-1 block text-xs text-gray-500">프롬프트</label>
+          {/* 프롬프트 라이브러리(R-2.1) — 이름붙여 저장·불러오기·삭제 */}
+          <div className="mb-1 flex items-center gap-1">
+            <select
+              className="min-w-0 flex-1 rounded border px-1 py-1 text-xs"
+              value={promptName}
+              onChange={(e) => onPickPrompt(e.target.value)}
+            >
+              <option value="">저장된 프롬프트…</option>
+              {prompts.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <input
+              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+              value={promptName}
+              onChange={(e) => {
+                setPromptName(e.target.value);
+                setPromptLibMsg('');
+              }}
+              placeholder="이름"
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+              onClick={() => void onSavePrompt()}
+              disabled={!promptName.trim()}
+            >
+              저장
+            </button>
+            <button
+              type="button"
+              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+              onClick={() => void onDeletePrompt()}
+              disabled={!prompts.some((p) => p.name === promptName.trim())}
+            >
+              삭제
+            </button>
+          </div>
+          {promptLibMsg && <p className="mb-1 text-[10px] text-gray-500">{promptLibMsg}</p>}
           <textarea
             className="h-24 w-full rounded border px-2 py-1"
             value={promptBody}
