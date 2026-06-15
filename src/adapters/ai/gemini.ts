@@ -1,5 +1,5 @@
 // AI 본문 어댑터 — Gemini 직접 호출(03 생성 방식 A). 얇은 fetch 래퍼(04 §6).
-// 키 순환·재시도는 상위(generateBody, R-0.2)가 처리. 어댑터는 단일 호출만 — AI_QUOTA(429/403)로 신호.
+// 키 순환·재시도는 상위(generateBody, R-0.2)가 처리. 어댑터는 단일 호출만 — 키 귀속 실패(429/403/400 무효키)를 AI_QUOTA 로 신호.
 import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { ok, err } from '@/types/common';
@@ -28,13 +28,17 @@ export const geminiTextAdapter: AITextAdapter = {
       );
 
       if (!res.ok) {
-        // 429/403 = 한도/인증 → 상위(generateBody)가 다음 키로 전환(R-0.2). 사유 통지(R-2.3).
-        const quota = res.status === 429 || res.status === 403;
+        // 키 귀속 실패(429 한도·403 권한·400 무효키)는 다음 키로 전환(R-0.2). 사유 통지(R-2.3).
+        // 400 은 모호 — 무효키 vs 잘못된 요청. Gemini 무효키 = INVALID_ARGUMENT "API key not valid".
+        // 본문에 그 신호가 있을 때만 전환(잘못된 요청은 키 다 써도 똑같이 실패 → 낭비).
+        const body = await res.text().catch(() => '');
+        const badKey = res.status === 400 && /api[_ ]?key not valid/i.test(body);
+        const rotate = res.status === 429 || res.status === 403 || badKey;
         return err(
           appError(
-            quota ? ERR.AI_QUOTA : ERR.AI_FORMAT,
-            `AI 호출 실패 (HTTP ${res.status})`,
-            { retriable: quota },
+            rotate ? ERR.AI_QUOTA : ERR.AI_FORMAT,
+            badKey ? 'API 키가 유효하지 않음 (HTTP 400)' : `AI 호출 실패 (HTTP ${res.status})`,
+            { retriable: rotate },
           ),
         );
       }

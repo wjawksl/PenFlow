@@ -2,7 +2,7 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-14 / 브랜치 `main` / HEAD `081779a` 다음 커밋(이미지 생성 재설계 + 참조 UI 수정 — 이 커밋에 반영).
+마지막 갱신: 2026-06-15 / 브랜치 `main` / HEAD `c3a11e4` 다음 커밋(무효키 전환 버그 수정 + 실측 3건 통과 — 이 커밋에 반영).
 
 > ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
 >
@@ -40,7 +40,16 @@
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
 
-### 2026-06-14 작업 (복수 API키 순환 R-0.1·R-0.2 — 이번 세션)
+### 2026-06-15 작업 (무효키 전환 버그 수정 + 실측 3건 통과 — 이번 세션)
+
+복수키 순환(R-0.2) 라이브 실측 중 발견한 구멍 메우고, 미확인 꼬리 3건 브라우저 실측 완료.
+
+1. **무효키 400 전환 안 되던 버그**(`adapters/ai/gemini.ts`) — 가짜/오타 키는 Gemini 가 **400 INVALID_ARGUMENT** 반환(429/403 아님). 어댑터가 이를 `AI_FORMAT` 으로 매핑 → 순환 트리거(`AI_QUOTA`) 안 걸려 **무효키 1개가 배치 전체 죽임**(뒤 정상키 못 써봄). 라이브서 "AI 호출 실패 (HTTP 400)" 만 뜨고 멈춤. → **에러 바디 검사**: 400 + `/api[_ ]?key not valid/i` 매칭 시 `AI_QUOTA`(전환). 그 외 400(진짜 잘못된 요청)은 `AI_FORMAT` 유지(키 다 써도 똑같이 실패 → 낭비 방지). 429/403 은 기존대로. 메시지도 무효키 땐 "API 키가 유효하지 않음".
+2. **어댑터 테스트 신규**(`tests/gemini-adapter.test.ts`) — fetch 모킹 7케이스: NO_CREDENTIAL / 400 무효키→AI_QUOTA / 400 잘못된요청→AI_FORMAT / 429→AI_QUOTA / 403→AI_QUOTA / 200 정상 / 200 빈응답→AI_EMPTY.
+3. **라이브 실측 통과** ✅ — (A) **복수키 순환**: 무효키 1번 + 정상키 2번 → "2번째 키로 전환" 후 성공 확인. (B) **프롬프트 라이브러리 R-2.1**: 저장/불러오기/덮어쓰기/삭제·리로드 후 영속 확인. (C) **Gemini 레이아웃 명세**: 인포그래픽 명세 → Gemini 웹 1장 결합 렌더 확인.
+4. 검증: tsc 0, 테스트 95 pass(88+7), prod 빌드 OK.
+
+### 2026-06-14 작업 (복수 API키 순환 R-0.1·R-0.2 — 이전 세션)
 
 본문 생성 키를 **여러 개 등록 → 한도 초과 시 다음 키로 자동 전환**. 대량 정보성 글 생성 시 쿼터 벽 대응. 기존엔 `aiTextCredentials[]` 가 배열인데 `getActiveCredential`=`[0]` 만 써 1개만 동작했음.
 
@@ -218,7 +227,8 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
 
 1. **Gemini 웹 반자동 스파이크** ✅ 동작 확인 — 라이브 검증 통과: 입력 주입(#2/#8 격리월드 OK), blob 스크랩(#5/#9), 완료 판정(#4). **삽입경로 합류까지 배선 완료**: 사이드패널 "Gemini 웹 이미지(반자동)" 블록(프롬프트+버튼) → `gemini.run` → BG `handleGeminiRun`(CS 운전 → dataUrl → `dexieRecordStore.put` → `Visual{role,source:'AI',data:{kind:'ref',id}}`) → 사이드패널 `visuals[]` 합류 → 썸네일 미리보기 → 기존 `image.insert` 커서 삽입. 완료 신호는 img `loaded` 클래스(주의: `image-loading-overlay` 는 완료 후에도 DOM 잔존 → 존재 여부로 판정 금지). 핵심 파일: `entrypoints/gemini.content.ts`, `forwardToGemini`/`handleGeminiRun`(background), `GEMINI`/`GEMINI_DEFAULTS`(selectors).
    - ✅ **결합 1장 + 레이아웃 명세로 재설계(2026-06-14)**: 생성 후 "🖼 이미지" 패널 GEMINI 모드 = 소제목 다중 선택 → **전체를 1장**으로. 본문요약(`composeImagePrompt` = 인포그래픽 레이아웃 명세) + 스타일 필드(구분선 분리) + 방향 라디오 → `buildFinalPrompt` 조립 → `gemini.run` 1회. 파일 첨부는 사용자가 Gemini 화면서 수동(안내). 위 "2026-06-14 작업" 참조.
-   - **남은 것**: 이미지 레이아웃 명세의 Gemini 웹 렌더 품질 **라이브 실측 미확인**. (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
+   - ✅ **레이아웃 명세 Gemini 웹 렌더 라이브 실측 통과(2026-06-15)** — 인포그래픽 명세 → 1장 결합 렌더 확인.
+   - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
 2. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
 3. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
 4. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).
