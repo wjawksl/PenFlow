@@ -3,7 +3,7 @@ import { taskToHtml } from '@/components/insert/engine';
 import { splitForSe, stripLeadingTitle } from '@/components/insert/dom';
 import type { InsertTask } from '@/types/models';
 
-// SE paste 분할(실측 기반) — 연속 텍스트는 한 묶음, heading 은 <p><strong> 강등, 구조 블록만 분리.
+// SE paste 분할(실측 기반) — 연속 텍스트는 한 묶음, heading·볼드는 평문화, 구조 블록만 분리.
 describe('splitForSe', () => {
   it('연속 텍스트(heading+p)는 한 조각으로 묶고 heading 강등 + 문단 사이 빈 줄을 넣는다', () => {
     const html = '<h2>제목</h2><p>문단1</p><p>문단2</p>';
@@ -21,6 +21,16 @@ describe('splitForSe', () => {
 
   it('블록 밖 맨 텍스트는 문단으로 감싼다', () => {
     expect(splitForSe('그냥 텍스트')).toEqual(['<p>그냥 텍스트</p>']);
+  });
+
+  it('본문 <strong>/<b> 는 평문으로 풀어 번짐을 차단(텍스트 보존)', () => {
+    const html = '<p><strong>중요:</strong> 본문이다</p><p>다음 <b>단어</b> 강조</p>';
+    expect(splitForSe(html)).toEqual(['<p>중요: 본문이다</p><p><br></p><p>다음 단어 강조</p>']);
+  });
+
+  it('리스트 항목 안의 볼드도 평문화(구조는 유지)', () => {
+    const html = '<ul><li><strong>가</strong>: 설명</li></ul>';
+    expect(splitForSe(html)).toEqual(['<ul><li>가: 설명</li></ul>']);
   });
 });
 

@@ -53,12 +53,12 @@ const PARA_SPACER = '<p><br></p>';
  * 실측(에디터 DOM 덤프, 2026-06): SE 는 (1) 따로 paste 한 텍스트 블록을 현재 문단에 합치고,
  * (2) heading 으로 시작하는 텍스트런에 heading 서식(볼드·큰 글씨)을 런 전체에 번지게 한다.
  * 해결: 연속 텍스트(p/heading)는 한 번에 묶어 paste(=SE 가 한 paste 안의 <p> 경계로 문단 생성),
- * heading 은 <p><strong> 으로 강등(볼드 트리거 제거, 볼드는 소제목 글자에만 국한),
+ * heading 은 평문 <p> 로 강등, 본문의 모든 <strong>/<b> 는 flattenBold 로 평문화(번짐 차단),
  * 표·리스트 등 구조 블록만 별도 paste(독립 컴포넌트화).
  * 문단 사이는 PARA_SPACER(빈 문단)로 한 줄 띄운다.
  */
 export function splitForSe(html: string): string[] {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const doc = new DOMParser().parseFromString(flattenBold(html), 'text/html');
   const out: string[] = [];
   let parts: string[] = []; // 누적 중인 텍스트런 문단들(빈 문단으로 이어 붙임)
   const flush = (): void => {
@@ -90,6 +90,20 @@ export function splitForSe(html: string): string[] {
 function demoteHeading(el: Element): string {
   if (/^H[1-4]$/.test(el.tagName)) return `<p>${el.innerHTML}</p>`;
   return el.outerHTML;
+}
+
+/**
+ * 본문의 <strong>/<b> 를 평문으로 풀어 번짐을 원천 차단.
+ * 실측: SE 는 paste 로 볼드를 깔끔히 못 받는다 — 문단 첫머리 볼드면 런 전체·다음 문단까지 번진다
+ * (heading 강등과 같은 결정: 볼드 시각효과는 포기). 마크다운 `**…**`(소제목·키워드 강조)가 주 원인.
+ * li·td 안의 볼드까지 일괄 처리하려 전체 HTML 에서 unwrap 한다.
+ */
+function flattenBold(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  for (const el of Array.from(doc.body.querySelectorAll('strong, b'))) {
+    el.replaceWith(...Array.from(el.childNodes));
+  }
+  return doc.body.innerHTML;
 }
 
 /** 본문 맨 앞 제목 heading 제거(제목칸과 중복 방지). 첫 블록이 title 과 같은 heading 일 때만. */
