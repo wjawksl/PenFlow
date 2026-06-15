@@ -267,6 +267,23 @@ export function App() {
     }
   }
 
+  // 드롭다운서 어투 선택 → 활성으로 + 저장된 명세·발췌를 편집칸에 불러와 수정 가능('없음'이면 편집칸 비움).
+  function onPickVoice(name: string) {
+    setActiveVoice(name);
+    setVoiceMsg('');
+    const v = voiceProfiles.find((x) => x.name === name);
+    if (v) {
+      setVoiceName(v.name);
+      setVoiceSpec(v.spec);
+      setVoiceExcerpts(v.excerpts);
+      setVoiceBlogId(v.sourceBlogId ?? '');
+    } else {
+      setVoiceName('');
+      setVoiceSpec('');
+      setVoiceExcerpts([]);
+    }
+  }
+
   // 활성 프로필 삭제 — 활성이었으면 '없음'으로.
   async function onDeleteVoice() {
     const name = activeVoice.trim();
@@ -274,6 +291,9 @@ export function App() {
     await deleteVoiceProfile(name);
     setVoiceProfiles(await listVoiceProfiles());
     setActiveVoice('');
+    setVoiceName('');
+    setVoiceSpec('');
+    setVoiceExcerpts([]);
     setVoiceMsg('🗑 삭제됨');
   }
 
@@ -858,10 +878,7 @@ export function App() {
             <select
               className="min-w-0 flex-1 rounded border px-1 py-1 text-xs"
               value={activeVoice}
-              onChange={(e) => {
-                setActiveVoice(e.target.value);
-                setVoiceMsg('');
-              }}
+              onChange={(e) => onPickVoice(e.target.value)}
             >
               <option value="">어투 없음</option>
               {voiceProfiles.map((v) => (
