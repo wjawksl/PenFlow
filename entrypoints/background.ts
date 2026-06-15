@@ -4,9 +4,10 @@ import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
 import { composeImagePrompt, extractH2Sections, generateBody } from '@/components/generator';
 import { buildVoiceAnalysisPrompt, pickExcerpts } from '@/components/voice-profile/analyze';
+import { callWithKeyRotation } from '@/lib/ai-rotate';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
 import { analyzeDensity } from '@/components/validator/density';
-import { getActiveCredential, loadSettings } from '@/components/settings';
+import { loadSettings } from '@/components/settings';
 import { collectTopics } from '@/components/topic';
 import { wireProgressBroadcast } from '@/lib/bus';
 import { appError, ERR } from '@/lib/errors';
@@ -176,9 +177,10 @@ async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>>
 // 결과는 사이드패널에서 편집 후 Gemini 로 전송된다. 자격증명 없으면 생성과 동일하게 실패 반환.
 async function handleImagePrompt(req: ImagePromptReq): Promise<Result<ImagePromptRes>> {
   const settings = await loadSettings();
-  const credential = getActiveCredential(settings);
-  if (!credential) return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
-  const prompt = await composeImagePrompt(req.sections, geminiTextAdapter, credential, settings.aiModel);
+  const credentials = settings.aiTextCredentials;
+  if (credentials.length === 0) return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
+  // 복수 키 순환(R-0.2): composeImagePrompt 내부가 첫 키 무효/한도면 다음 키로 전환.
+  const prompt = await composeImagePrompt(req.sections, geminiTextAdapter, credentials, settings.aiModel);
   return { ok: true, value: { prompt } };
 }
 
@@ -302,8 +304,8 @@ async function handleVoiceLearn(req: VoiceLearnReq): Promise<Result<VoiceLearnRe
   const blogId = req.blogId.trim();
   if (!blogId) return failed(appError('VOICE_INPUT', '블로그 아이디를 입력해 주세요.'));
   const settings = await loadSettings();
-  const credential = getActiveCredential(settings);
-  if (!credential) return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
+  const credentials = settings.aiTextCredentials;
+  if (credentials.length === 0) return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
 
   const want = Math.min(Math.max(1, Math.floor(req.count ?? VOICE_DEFAULT_COUNT)), VOICE_MAX_COUNT);
   progress('generate', '블로그 글 목록 수집 중…', { percent: 15 });
@@ -324,11 +326,13 @@ async function handleVoiceLearn(req: VoiceLearnReq): Promise<Result<VoiceLearnRe
   }
 
   progress('generate', '어투 분석 중…', { percent: 60 });
-  const res = await geminiTextAdapter.generate({
-    prompt: buildVoiceAnalysisPrompt(bodies),
-    model: settings.aiModel,
-    credential,
-  });
+  // 복수 키 순환(R-0.2): 첫 키 무효/한도면 다음 키로 전환.
+  const res = await callWithKeyRotation(
+    credentials,
+    (credential) =>
+      geminiTextAdapter.generate({ prompt: buildVoiceAnalysisPrompt(bodies), model: settings.aiModel, credential }),
+    (n) => progress('generate', `키 한도 초과 — ${n}번째 키로 전환`, { percent: 60 }),
+  );
   if (!res.ok) {
     progress('generate', res.error.message, { level: 'error' });
     return res;

@@ -4,6 +4,7 @@ import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
 import { assemblePrompt } from '@/lib/prompt';
+import { callWithKeyRotation } from '@/lib/ai-rotate';
 import { make } from '@/lib/markers';
 import { markdownToHtml } from '@/components/validator/convert';
 import { ok, err, type Result } from '@/types/common';
@@ -28,12 +29,12 @@ export async function generateBody(params: GenerateParams): Promise<Result<strin
 
   progress('generate', 'AI 본문 생성 중…', { percent: 10 });
   const assembled = assemblePrompt(topic, prompt, reference, options, voice);
-  // 복수 키 순환(R-0.2): 한도/인증 실패(AI_QUOTA=429/403)면 다음 키로 재시도. 그 외 오류는 즉시 통지.
-  let res = await adapter.generate({ prompt: assembled, model, credential: credentials[0]! });
-  for (let i = 1; i < credentials.length && !res.ok && res.error.code === ERR.AI_QUOTA; i++) {
-    progress('generate', `키 한도 초과 — ${i + 1}번째 키로 전환`, { percent: 10 });
-    res = await adapter.generate({ prompt: assembled, model, credential: credentials[i]! });
-  }
+  // 복수 키 순환(R-0.2): 한도/인증 실패(AI_QUOTA)면 다음 키로 재시도. 그 외 오류는 즉시 통지.
+  const res = await callWithKeyRotation(
+    credentials,
+    (credential) => adapter.generate({ prompt: assembled, model, credential }),
+    (n) => progress('generate', `키 한도 초과 — ${n}번째 키로 전환`, { percent: 10 }),
+  );
   if (!res.ok) {
     progress('generate', res.error.message, { level: 'error' });
     return res;
@@ -116,7 +117,7 @@ const IMG_SRC_MAX = 700;
 export async function composeImagePrompt(
   sections: Array<{ caption: string; text: string }>,
   adapter: AITextAdapter,
-  credential: Credential,
+  credentials: Credential[],
   model: string,
 ): Promise<string> {
   if (sections.length === 0) return '';
@@ -158,7 +159,9 @@ export async function composeImagePrompt(
     list,
   ].join('\n');
 
-  const res = await adapter.generate({ prompt, model, credential });
+  const res = await callWithKeyRotation(credentials, (credential) =>
+    adapter.generate({ prompt, model, credential }),
+  );
   if (!res.ok) {
     progress('generate', `레이아웃 명세 건너뜀: ${res.error.message}`, { level: 'warn' });
     return '';

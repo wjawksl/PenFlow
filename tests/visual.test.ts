@@ -66,7 +66,7 @@ describe('composeImagePrompt (⑨ 선택 소제목 → 본문 요약 합성)', (
 
   it('LLM 요약을 코드펜스 제거 후 반환', async () => {
     const adapter = fakeAdapter(ok('```\n요약 본문\n```'));
-    expect(await composeImagePrompt(secs, adapter, cred, 'm')).toBe('요약 본문');
+    expect(await composeImagePrompt(secs, adapter, [cred], 'm')).toBe('요약 본문');
   });
 
   it('레이아웃 템플릿 지시 — 골격·분기 규칙·숫자 보존, 스타일 배제', async () => {
@@ -77,7 +77,7 @@ describe('composeImagePrompt (⑨ 선택 소제목 → 본문 요약 합성)', (
         return ok('x');
       },
     };
-    await composeImagePrompt(secs, spy, cred, 'm');
+    await composeImagePrompt(secs, spy, [cred], 'm');
     expect(seen).toContain('레이아웃 명세'); // 골격
     expect(seen).toContain('플로우'); // 분기 규칙(절차→플로우)
     expect(seen).toContain('숫자'); // 수치 보존
@@ -87,7 +87,7 @@ describe('composeImagePrompt (⑨ 선택 소제목 → 본문 요약 합성)', (
 
   it('LLM 실패면 빈 문자열로 폴백(본문 생성과 분리)', async () => {
     const failed = fakeAdapter(err(appError('X', '실패')));
-    expect(await composeImagePrompt(secs, failed, cred, 'm')).toBe('');
+    expect(await composeImagePrompt(secs, failed, [cred], 'm')).toBe('');
   });
 
   it('섹션이 없으면 빈 문자열(LLM 호출 안 함)', async () => {
@@ -98,7 +98,7 @@ describe('composeImagePrompt (⑨ 선택 소제목 → 본문 요약 합성)', (
         return ok('x');
       },
     };
-    expect(await composeImagePrompt([], adapter, cred, 'm')).toBe('');
+    expect(await composeImagePrompt([], adapter, [cred], 'm')).toBe('');
     expect(called).toBe(false);
   });
 });

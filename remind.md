@@ -2,7 +2,7 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-15 / 브랜치 `main` / HEAD `e4fdfbf` 다음 커밋(어투 프로필 = 내 블로그 말투 학습 — 이 커밋에 반영).
+마지막 갱신: 2026-06-15 / 브랜치 `main` / HEAD `bafeb68` 다음 커밋(키 순환 헬퍼 통합 — 이 커밋에 반영).
 
 > ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
 >
@@ -39,6 +39,15 @@
 ---
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
+
+### 2026-06-15 작업 (키 순환 헬퍼로 통합 — 어투·이미지 경로도 전환 — 이번 세션)
+
+어투 학습 실측서 "❌ API 키가 유효하지 않음 (HTTP 400)" 발견. 원인 = 순환 테스트 때 넣은 무효키가 `aiTextCredentials[0]` 인데, **어투·이미지 프롬프트 경로는 `getActiveCredential`=[0] 1개만** 써 전환 안 됨(본문 생성만 순환). → 순환 로직을 공용 헬퍼로 빼고 세 경로가 공유하게 통합.
+
+1. **공용 헬퍼**(`src/lib/ai-rotate.ts` `callWithKeyRotation(credentials, call, onRotate?)`) — `call`(자격증명 1개→Result) 을 키 순서로 시도, `AI_QUOTA`(429/403/무효키 400)면 다음 키 재시도, 그 외 즉시 반환, 빈 배열 `NO_CREDENTIAL`. `onRotate(n)` 은 진행 메시지용.
+2. **적용 3곳**: `generateBody`(인라인 루프 → 헬퍼) / `composeImagePrompt`(시그니처 `credential` → `credentials[]`, 내부 헬퍼) / `handleVoiceLearn`(분석 호출 헬퍼). `handleImagePrompt`·`handleVoiceLearn` 가 `getActiveCredential` 대신 `settings.aiTextCredentials` 통째 전달. background 에서 `getActiveCredential` import 제거(미사용).
+3. **테스트**(`tests/ai-rotate.test.ts` 5케이스: 첫키성공/전환성공+onRotate/전부quota/비-quota전환안함/빈배열) + `visual.test.ts` composeImagePrompt 호출을 `[cred]` 로 갱신.
+4. 검증: tsc 0, 테스트 108 pass(103+5), prod 빌드 OK.
 
 ### 2026-06-15 작업 (어투 프로필 = 내 블로그 말투 학습 — 이번 세션)
 
@@ -221,6 +230,7 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
 | 이미지 삽입(fetch·File·paste·완료감지) | `src/components/insert/image.ts` |
 | content script(삽입·이미지 라우팅) | `entrypoints/editor.content.ts` |
 | 본문 생성·후처리·마커 주입 | `src/components/generator/index.ts` |
+| 복수 키 순환 공용 헬퍼(R-0.2) | `src/lib/ai-rotate.ts`(`callWithKeyRotation`) |
 | 부가요소 합성(마커→InsertQueue) | `src/components/composer/index.ts` |
 | 합성 정합성 검사 | `src/components/composer/validate.ts` |
 | 비주얼 합성(Canvas) | `src/components/visual/{thumbnail,index}.ts` |
