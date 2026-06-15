@@ -31,6 +31,17 @@ export interface Prompt {
   body: string;
 } // 이름 저장/불러오기(R-2.1)
 
+// ── 어투 프로필 (내 블로그 말투 학습) ───────────────────────
+// 블로그 본문 N건 → 텍스트 LLM 이 어투 명세로 증류 + 짧은 원문 발췌(하이브리드).
+// 생성 시 활성 프로필을 [어투 지침] 으로 주입해 글을 블로그 어투로 통일한다.
+export interface VoiceProfile {
+  name: string;
+  spec: string; // LLM 증류 어투 명세(종결어·문장길이·이모지·어휘·리듬)
+  excerpts: string[]; // 짧은 원문 발췌 1~2개(few-shot, 하이브리드)
+  sourceBlogId?: string; // 학습 출처 블로그 아이디
+  createdAt?: number;
+}
+
 // ── 주제 (② 선정) ───────────────────────────────────────────
 export interface Topic {
   id: string;

@@ -3,6 +3,7 @@ import { geminiTextAdapter } from '@/adapters/ai/gemini';
 import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
 import { composeImagePrompt, extractH2Sections, generateBody } from '@/components/generator';
+import { buildVoiceAnalysisPrompt, pickExcerpts } from '@/components/voice-profile/analyze';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
 import { analyzeDensity } from '@/components/validator/density';
 import { getActiveCredential, loadSettings } from '@/components/settings';
@@ -32,6 +33,8 @@ import type {
   ReferenceFetchRes,
   TopicCollectReq,
   TopicCollectRes,
+  VoiceLearnReq,
+  VoiceLearnRes,
   VisualComposeReq,
   VisualComposeRes,
   VisualFetchReq,
@@ -92,6 +95,11 @@ export default defineBackground(() => {
       handleImagePrompt(msg.payload as ImagePromptReq).then(sendResponse);
       return true;
     }
+    if (msg.name === 'voice.learn') {
+      // 어투 학습: 블로그 본문 N건 수집 → 텍스트 LLM 으로 어투 명세 증류 + 발췌.
+      handleVoiceLearn(msg.payload as VoiceLearnReq).then(sendResponse);
+      return true;
+    }
     if (msg.name === 'reference.fetch') {
       // 참조 바구니: 링크 fetch → 본문 텍스트 추출(CORS 회피 위해 background).
       handleReferenceFetch(msg.payload as ReferenceFetchReq).then(sendResponse);
@@ -141,6 +149,7 @@ async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>>
     prompt: req.prompt,
     reference: req.reference,
     options: req.options, // 부가요소 마커 지시(M2)
+    voice: req.voice, // 활성 어투 프로필(내 블로그 말투 통일)
     adapter: geminiTextAdapter,
     credentials, // 복수 키 순환(R-0.2)
     model: settings.aiModel,
@@ -282,6 +291,96 @@ function stripTags(html: string): string {
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ');
+}
+
+// 어투 학습 — 블로그 본문 N건 수집 → 텍스트 LLM 으로 어투 명세 증류 + 짧은 발췌(하이브리드).
+// 본문 수집은 제목 수집과 같은 PostTitleListAsync(logNo) → 모바일 PostView fetch → 오프스크린 turndown.
+const VOICE_DEFAULT_COUNT = 5;
+const VOICE_MAX_COUNT = 10;
+const VOICE_POST_TIMEOUT_MS = 15_000;
+async function handleVoiceLearn(req: VoiceLearnReq): Promise<Result<VoiceLearnRes>> {
+  const blogId = req.blogId.trim();
+  if (!blogId) return failed(appError('VOICE_INPUT', '블로그 아이디를 입력해 주세요.'));
+  const settings = await loadSettings();
+  const credential = getActiveCredential(settings);
+  if (!credential) return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
+
+  const want = Math.min(Math.max(1, Math.floor(req.count ?? VOICE_DEFAULT_COUNT)), VOICE_MAX_COUNT);
+  progress('generate', '블로그 글 목록 수집 중…', { percent: 15 });
+  const logNos = await fetchBlogLogNos(blogId, want);
+  if (!logNos.ok) return logNos;
+  if (logNos.value.length === 0) {
+    return failed(appError('VOICE_EMPTY', '글을 찾지 못했어요(비공개·없는 블로그일 수 있어요).'));
+  }
+
+  const bodies: string[] = [];
+  for (const logNo of logNos.value.slice(0, want)) {
+    progress('generate', `본문 수집 중… (${bodies.length + 1}/${logNos.value.length})`, { percent: 20 });
+    const body = await fetchPostBody(blogId, logNo);
+    if (body) bodies.push(body);
+  }
+  if (bodies.length === 0) {
+    return failed(appError('VOICE_EMPTY', '본문을 읽지 못했어요(형식 변경 가능).'));
+  }
+
+  progress('generate', '어투 분석 중…', { percent: 60 });
+  const res = await geminiTextAdapter.generate({
+    prompt: buildVoiceAnalysisPrompt(bodies),
+    model: settings.aiModel,
+    credential,
+  });
+  if (!res.ok) {
+    progress('generate', res.error.message, { level: 'error' });
+    return res;
+  }
+  progress('generate', '어투 학습 완료', { percent: 100 });
+  return {
+    ok: true,
+    value: { spec: res.value.trim(), excerpts: pickExcerpts(bodies), sampleCount: bodies.length },
+  };
+}
+
+// 블로그 최근 글 logNo 목록 — 제목 수집과 같은 PostTitleListAsync. JSON 파싱 실패 시 정규식 폴백.
+async function fetchBlogLogNos(blogId: string, count: number): Promise<Result<string[]>> {
+  const url =
+    `https://blog.naver.com/PostTitleListAsync.naver?blogId=${encodeURIComponent(blogId)}` +
+    `&viewdate=&currentPage=1&categoryNo=0&countPerPage=${count}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return failed(appError('VOICE_FETCH', `글 목록 수집 실패 (HTTP ${res.status}).`));
+    const text = (await res.text()).trim();
+    let logNos: string[];
+    try {
+      const data = JSON.parse(text) as { postList?: Array<{ logNo?: string }> };
+      logNos = (data.postList ?? []).map((p) => p.logNo ?? '').filter(Boolean);
+    } catch {
+      logNos = [...text.matchAll(/"logNo"\s*:\s*"?(\d+)"?/g)].map((m) => m[1]!);
+    }
+    return { ok: true, value: logNos };
+  } catch (e) {
+    return failed(appError('VOICE_FETCH', `글 목록 네트워크 오류: ${String(e)}`));
+  }
+}
+
+// 모바일 PostView HTML → 오프스크린 turndown 으로 본문 텍스트. 실패 시 거친 평문 폴백, 그래도 없으면 빈 문자열.
+async function fetchPostBody(blogId: string, logNo: string): Promise<string> {
+  const url = `https://m.blog.naver.com/${encodeURIComponent(blogId)}/${encodeURIComponent(logNo)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), VOICE_POST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
+    if (!res.ok) return '';
+    const html = await res.text();
+    const conv = await callOffscreen<ConvertReq, ConvertRes>('convert.htmlmd', {
+      direction: 'html2md',
+      content: html,
+    });
+    return (conv.ok ? conv.value.content : stripTags(html)).trim();
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ⑩ 키워드 밀도 검증(M3 WP2). 저장 본문에서 키워드 횟수·밀도 집계(경량, DOM 불필요).

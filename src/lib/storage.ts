@@ -26,4 +26,5 @@ export const STORE_KEYS = {
   settings: 'settings',
   session: 'autoPostSession',
   promptPrefix: 'prompt:',
+  voicePrefix: 'voice:', // 어투 프로필(내 블로그 말투 학습)
 } as const;

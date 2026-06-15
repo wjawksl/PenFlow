@@ -10,6 +10,7 @@ import type {
   Visual,
   VisualRole,
   VisualSource,
+  VoiceProfile,
 } from '@/types/models';
 
 // ── 봉투(05 §4) ─────────────────────────────────────────────
@@ -29,6 +30,7 @@ export type ChannelName =
   | 'visual.fetch'
   | 'gemini.run'
   | 'image.prompt'
+  | 'voice.learn'
   | 'reference.fetch'
   | 'convert.htmlmd'
   | 'density.analyze'
@@ -51,12 +53,25 @@ export interface GenerateReq {
   topic: Topic;
   prompt: Prompt;
   reference?: string;
+  voice?: VoiceProfile; // 활성 어투 프로필(내 블로그 말투 통일) — 없으면 미주입
   method: 'direct' | 'web'; // 03 생성 방식 A/B
   options: PayloadOptions;
 }
 export interface GenerateRes {
   contentHtml: string;
 } // ③→⑩: 약속된 마커 포함
+
+// 어투 학습: 블로그 본문 N건 수집 → 텍스트 LLM 으로 어투 명세 증류 + 짧은 발췌(하이브리드).
+// 저장(이름붙이기)은 사이드패널이 voice-profile 모듈로 직접(storage.local). 여기선 학습 결과만 반환.
+export interface VoiceLearnReq {
+  blogId: string;
+  count?: number; // 분석할 최근 글 수(기본 5)
+}
+export interface VoiceLearnRes {
+  spec: string; // 증류된 어투 명세
+  excerpts: string[]; // 짧은 원문 발췌
+  sampleCount: number; // 실제 분석에 쓰인 글 수
+}
 
 // ⑨ 소제목 1건 = 캡션 + 해당 섹션 본문 발췌. 생성 후 이미지 패널의 소제목 선택·맥락 동반에 쓰인다.
 export interface H2Section {

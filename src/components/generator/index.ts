@@ -7,7 +7,7 @@ import { assemblePrompt } from '@/lib/prompt';
 import { make } from '@/lib/markers';
 import { markdownToHtml } from '@/components/validator/convert';
 import { ok, err, type Result } from '@/types/common';
-import type { Credential, PayloadOptions, Prompt, Topic } from '@/types/models';
+import type { Credential, PayloadOptions, Prompt, Topic, VoiceProfile } from '@/types/models';
 import { stripWrappers } from './postprocess';
 
 export interface GenerateParams {
@@ -15,6 +15,7 @@ export interface GenerateParams {
   prompt: Prompt;
   reference?: string;
   options?: PayloadOptions; // 켜진 부가요소 마커를 프롬프트에 지시(M2)
+  voice?: VoiceProfile; // 활성 어투 프로필 — 글 전체를 블로그 말투로 통일
   adapter: AITextAdapter;
   credentials: Credential[]; // 복수 키 — 한도 초과 시 순서대로 전환(R-0.1, R-0.2)
   model: string;
@@ -22,11 +23,11 @@ export interface GenerateParams {
 
 /** 생성 결과: 소제목(H2) 포함 본문 HTML. M1 마커 검사 = 소제목 1개 이상(구조 검사, 06 §5). */
 export async function generateBody(params: GenerateParams): Promise<Result<string>> {
-  const { topic, prompt, reference, options, adapter, credentials, model } = params;
+  const { topic, prompt, reference, options, voice, adapter, credentials, model } = params;
   if (credentials.length === 0) return err(appError(ERR.NO_CREDENTIAL, 'AI 인증 키가 없습니다.'));
 
   progress('generate', 'AI 본문 생성 중…', { percent: 10 });
-  const assembled = assemblePrompt(topic, prompt, reference, options);
+  const assembled = assemblePrompt(topic, prompt, reference, options, voice);
   // 복수 키 순환(R-0.2): 한도/인증 실패(AI_QUOTA=429/403)면 다음 키로 재시도. 그 외 오류는 즉시 통지.
   let res = await adapter.generate({ prompt: assembled, model, credential: credentials[0]! });
   for (let i = 1; i < credentials.length && !res.ok && res.error.code === ERR.AI_QUOTA; i++) {

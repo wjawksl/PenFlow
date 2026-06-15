@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { loadSettings, setDensityRange } from '@/components/settings';
 import { listPrompts, savePrompt, deletePrompt } from '@/components/prompt-library';
+import {
+  listVoiceProfiles,
+  saveVoiceProfile,
+  deleteVoiceProfile,
+} from '@/components/voice-profile';
 import type {
   ComposeThumbsReq,
   DensityAnalyzeReq,
@@ -20,12 +25,21 @@ import type {
   TopicCollectReq,
   TopicCollectRes,
   VisualComposeRes,
+  VoiceLearnReq,
+  VoiceLearnRes,
 } from '@/lib/messaging';
 import { DEFAULT_PROMPT } from '@/lib/prompt';
 import { extractFileText } from '@/components/reference/extract';
 import { sendCmd, subscribeEvents } from '@/lib/ui-bus';
 import { dexieRecordStore, refToObjectUrl } from '@/adapters/storage/record-store';
-import type { DensityReport, PayloadOptions, Prompt, Topic, Visual } from '@/types/models';
+import type {
+  DensityReport,
+  PayloadOptions,
+  Prompt,
+  Topic,
+  Visual,
+  VoiceProfile,
+} from '@/types/models';
 
 // 경쟁도 수치(1·2·3) → 라벨. searchad 어댑터 COMP_MAP 역환원.
 const COMP_LABEL: Record<number, string> = { 1: '낮음', 2: '중간', 3: '높음' };
@@ -110,6 +124,15 @@ export function App() {
   const [prompts, setPrompts] = useState<Prompt[]>([]); // 저장된 프롬프트 라이브러리(R-2.1)
   const [promptName, setPromptName] = useState(''); // 저장/선택 중인 프롬프트 이름
   const [promptLibMsg, setPromptLibMsg] = useState(''); // 저장/삭제 결과 메시지
+  // 어투 프로필(내 블로그 말투 학습) — 학습→이름붙여 저장, 활성 1개를 생성에 주입.
+  const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>([]);
+  const [activeVoice, setActiveVoice] = useState(''); // 생성에 적용할 활성 프로필 이름('' = 없음)
+  const [voiceBlogId, setVoiceBlogId] = useState(''); // 어투 학습 대상 블로그 아이디
+  const [voiceName, setVoiceName] = useState(''); // 저장 이름
+  const [voiceSpec, setVoiceSpec] = useState(''); // 학습된 어투 명세(편집 가능)
+  const [voiceExcerpts, setVoiceExcerpts] = useState<string[]>([]); // 학습된 원문 발췌(하이브리드)
+  const [voiceBusy, setVoiceBusy] = useState(false); // 학습 진행 중
+  const [voiceMsg, setVoiceMsg] = useState(''); // 학습/저장 결과 메시지
   const [references, setReferences] = useState<RefItem[]>([]); // 참조 바구니(첨부파일·링크·텍스트)
   const [refUrl, setRefUrl] = useState('');
   const [refText, setRefText] = useState('');
@@ -198,6 +221,60 @@ export function App() {
     setPrompts(await listPrompts());
     setPromptName('');
     setPromptLibMsg('🗑 삭제됨');
+  }
+
+  // 저장된 어투 프로필 불러오기.
+  useEffect(() => {
+    listVoiceProfiles().then(setVoiceProfiles);
+  }, []);
+
+  // 블로그 본문 학습 → 어투 명세·발췌 받아 편집 칸 채움(저장 전).
+  async function onLearnVoice() {
+    const blogId = voiceBlogId.trim();
+    if (!blogId) {
+      setVoiceMsg('❌ 블로그 아이디를 입력해 주세요.');
+      return;
+    }
+    setVoiceBusy(true);
+    setVoiceMsg('📚 글 수집·어투 분석 중…');
+    const res = await sendCmd<VoiceLearnReq, VoiceLearnRes>('voice.learn', { blogId });
+    setVoiceBusy(false);
+    if (!res.ok) {
+      setVoiceMsg(`❌ ${res.error.message}`);
+      return;
+    }
+    setVoiceSpec(res.value.spec);
+    setVoiceExcerpts(res.value.excerpts);
+    if (!voiceName.trim()) setVoiceName(blogId);
+    setVoiceMsg(`✅ ${res.value.sampleCount}개 글에서 어투 학습 완료. 확인 후 저장하세요.`);
+  }
+
+  // 학습·편집한 어투를 이름붙여 저장(같은 이름이면 덮어쓰기) → 활성으로.
+  async function onSaveVoice() {
+    try {
+      const name = voiceName.trim();
+      await saveVoiceProfile({
+        name,
+        spec: voiceSpec,
+        excerpts: voiceExcerpts,
+        sourceBlogId: voiceBlogId.trim() || undefined,
+      });
+      setVoiceProfiles(await listVoiceProfiles());
+      setActiveVoice(name);
+      setVoiceMsg('✅ 저장됨 (활성 어투로 적용)');
+    } catch (e) {
+      setVoiceMsg(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // 활성 프로필 삭제 — 활성이었으면 '없음'으로.
+  async function onDeleteVoice() {
+    const name = activeVoice.trim();
+    if (!name) return;
+    await deleteVoiceProfile(name);
+    setVoiceProfiles(await listVoiceProfiles());
+    setActiveVoice('');
+    setVoiceMsg('🗑 삭제됨');
   }
 
   useEffect(
@@ -418,6 +495,7 @@ export function App() {
       topic: { id: crypto.randomUUID(), keyword },
       prompt: { name: DEFAULT_PROMPT.name, body: promptBody },
       reference: buildReference(), // 참조 바구니 동반(참고자료)
+      voice: voiceProfiles.find((v) => v.name === activeVoice), // 활성 어투 프로필(없으면 undefined)
       method: 'direct',
       options: buildOptions(extras),
     };
@@ -770,6 +848,88 @@ export function App() {
             onChange={(e) => setPromptBody(e.target.value)}
           />
         </div>
+
+        {/* 어투 프로필 — 내 블로그 본문을 학습해 생성 글을 같은 말투로 통일. 활성 1개를 생성에 주입. */}
+        <fieldset className="min-w-0 space-y-2 rounded border p-2">
+          <legend className="px-1 text-xs text-gray-500">어투 (내 블로그 말투, 선택)</legend>
+
+          {/* 활성 프로필 토글 — 생성에 적용할 어투를 고름('없음'=미적용) */}
+          <div className="flex items-center gap-1">
+            <select
+              className="min-w-0 flex-1 rounded border px-1 py-1 text-xs"
+              value={activeVoice}
+              onChange={(e) => {
+                setActiveVoice(e.target.value);
+                setVoiceMsg('');
+              }}
+            >
+              <option value="">어투 없음</option>
+              {voiceProfiles.map((v) => (
+                <option key={v.name} value={v.name}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+              onClick={() => void onDeleteVoice()}
+              disabled={!voiceProfiles.some((v) => v.name === activeVoice.trim())}
+            >
+              삭제
+            </button>
+          </div>
+
+          {/* 학습 — 블로그 아이디에서 최근 글 본문을 긁어 어투 명세로 증류 */}
+          <div className="flex items-center gap-1">
+            <input
+              className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+              value={voiceBlogId}
+              onChange={(e) => setVoiceBlogId(e.target.value)}
+              placeholder="학습할 블로그 아이디"
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+              onClick={() => void onLearnVoice()}
+              disabled={voiceBusy || !voiceBlogId.trim()}
+            >
+              {voiceBusy ? '학습 중…' : '📚 어투 학습'}
+            </button>
+          </div>
+
+          {/* 학습 결과 — 명세 편집 + 이름붙여 저장 */}
+          {voiceSpec && (
+            <>
+              <textarea
+                className="h-28 w-full resize-none rounded border px-2 py-1 text-xs"
+                value={voiceSpec}
+                onChange={(e) => setVoiceSpec(e.target.value)}
+                placeholder="학습된 어투 명세 (편집 가능)"
+              />
+              {voiceExcerpts.length > 0 && (
+                <p className="text-[10px] text-gray-400">원문 발췌 {voiceExcerpts.length}개 동반</p>
+              )}
+              <div className="flex items-center gap-1">
+                <input
+                  className="min-w-0 flex-1 rounded border px-2 py-1 text-xs"
+                  value={voiceName}
+                  onChange={(e) => setVoiceName(e.target.value)}
+                  placeholder="어투 이름"
+                />
+                <button
+                  type="button"
+                  className="shrink-0 rounded border px-2 py-1 text-xs disabled:opacity-50"
+                  onClick={() => void onSaveVoice()}
+                  disabled={!voiceName.trim() || !voiceSpec.trim()}
+                >
+                  저장
+                </button>
+              </div>
+            </>
+          )}
+          {voiceMsg && <p className="text-[10px] text-gray-500">{voiceMsg}</p>}
+        </fieldset>
 
         {/* 참조 바구니 — 첨부파일·링크를 모아 글 생성 시 [참고 자료] 로 동반. 두 컴포넌트로 분리. */}
         <fieldset className="min-w-0 space-y-3 rounded border p-2">

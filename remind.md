@@ -2,7 +2,7 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-15 / 브랜치 `main` / HEAD `c3a11e4` 다음 커밋(무효키 전환 버그 수정 + 실측 3건 통과 — 이 커밋에 반영).
+마지막 갱신: 2026-06-15 / 브랜치 `main` / HEAD `e4fdfbf` 다음 커밋(어투 프로필 = 내 블로그 말투 학습 — 이 커밋에 반영).
 
 > ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
 >
@@ -18,7 +18,7 @@
 | **M2** | ② 주제 선정(검색량/블로그제목/연관검색어) + ④ 부가요소 합성(표·링크·CTA·백링크·광고문구) | ✅ 완료 |
 | **M3** | ⑨ 비주얼(이미지) + ⑩ 검증(변환·밀도) + Offscreen + 이미지 삽입 | 🟡 진행 중 |
 | M4 | ⑧ 연속/예약/간격 자동화 + 발행(PUBLISH) | ⬜ 예정 |
-| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 | 🟡 프롬프트 라이브러리(R-2.1)·복수키 순환(R-0.2) ✅ / 대화형(B) ⬜ |
+| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 + 어투 프로필 | 🟡 프롬프트 라이브러리(R-2.1)·복수키 순환(R-0.2)·어투 프로필 ✅ / 대화형(B) ⬜ |
 
 ---
 
@@ -39,6 +39,20 @@
 ---
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
+
+### 2026-06-15 작업 (어투 프로필 = 내 블로그 말투 학습 — 이번 세션)
+
+**목적**: 펜플로우 생성 글을 **내 블로그 자연 어투로 통일**. 기존 "블로그 글 수집"은 제목만 모았는데(주제 소스), 이번엔 **본문**을 긁어 말투를 학습해 생성 프롬프트에 주입.
+
+**설계 결정**(사용자): 어투 추출 = **하이브리드**(LLM 증류 어투 명세 + 짧은 원문 발췌 1~2개) / 적용 = **활성 프로필 토글**(드롭다운서 1개 골라 생성에 주입, '어투 없음' 가능).
+
+1. **타입·저장**(`types/models.ts` `VoiceProfile{name,spec,excerpts[],sourceBlogId?,createdAt?}`, `storage.ts` `STORE_KEYS.voicePrefix='voice:'`). CRUD = `components/voice-profile/index.ts` — 프롬프트 라이브러리(R-2.1)와 **같은 프리픽스 패턴**(`list/save/delete`, 빈 이름·빈 명세 거부, 발췌 빈 항목 제거).
+2. **분석 순수 함수**(`components/voice-profile/analyze.ts`) — `buildVoiceAnalysisPrompt(samples)`(주제·내용 무시, **말투만** 불릿으로: 종결어미·문장리듬·어휘·이모지·호칭·톤. 본문 1건당 1,500자·최대 5건 상한) + `pickExcerpts(samples,max=2)`(40~220자 대표 문단, 중복 제거). LLM 호출은 background, 여기는 순수 로직(테스트 가능).
+3. **본문 수집·학습 배선**(`background.ts` `handleVoiceLearn` + `voice.learn` 채널) — `fetchBlogLogNos`(제목 수집과 같은 `PostTitleListAsync` → logNo, JSON 실패 시 정규식 폴백) → 각 logNo 를 **모바일 PostView**(`m.blog.naver.com/{blogId}/{logNo}`) fetch → **오프스크린 turndown**(`reference.fetch` 와 같은 경로, CORS 회피) → 본문 N건 → `buildVoiceAnalysisPrompt` → `geminiTextAdapter.generate`(getActiveCredential=[0], 순환 불필요) → `{spec,excerpts,sampleCount}`. host 권한은 참조 바구니의 `<all_urls>` 가 커버(매니페스트 무변경).
+4. **주입**(`lib/prompt.ts` `assemblePrompt` 5번째 인자 `voice?` → `[어투 지침]` 파트: 명세 + "참고할 어투 예시" 발췌. spec 공백뿐이면 미주입). `GenerateParams.voice`·`GenerateReq.voice` 스레드, `handleGenerate` 가 `req.voice` 전달. 저장(이름붙이기)은 **사이드패널이 voice-profile 모듈로 직접**(storage.local), `voice.learn` 은 학습 결과만 반환.
+5. **UI**(`App.tsx` 프롬프트 textarea 아래 "어투 (내 블로그 말투, 선택)" fieldset) — 활성 드롭다운('어투 없음'+저장된 것)+삭제 / 블로그 아이디 input + `📚 어투 학습` 버튼 → 명세 textarea(편집 가능)+발췌 개수+이름 input+`저장`. 활성 프로필을 `GenerateReq.voice` 로 주입.
+6. **테스트**(`tests/voice-profile.test.ts`) — 8케이스: CRUD(저장·거부·덮어쓰기·발췌정리·정렬·삭제) + 분석 순수함수(프롬프트 내용·pickExcerpts 범위/중복) + assemblePrompt 주입(미주입/주입/공백 스킵).
+7. 검증: tsc 0, 테스트 103 pass(95+8), prod 빌드 OK. ⚠️ **브라우저 실측 미확인** — (a) 모바일 PostView turndown 이 본문을 깨끗이 뽑는지(네비/댓글 노이즈 섞일 수 있음, 분석 1,500자 상한이 일부 완화), (b) 비공개·이웃공개 글 처리, (c) 학습된 어투가 실제 생성 글에 반영되는지. 핵심 파일: `voice-profile/{index,analyze}.ts`, `background.ts`(`handleVoiceLearn`/`fetchBlogLogNos`/`fetchPostBody`), `prompt.ts`, `App.tsx`.
 
 ### 2026-06-15 작업 (무효키 전환 버그 수정 + 실측 3건 통과 — 이번 세션)
 
@@ -216,6 +230,8 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
 | 참조 첨부 추출(PDF·docx·hwpx·텍스트) | `src/components/reference/extract.ts` |
 | 이미지 저장(Dexie) | `src/adapters/storage/record-store.ts` |
 | 프롬프트 라이브러리(저장/불러오기/삭제, R-2.1) | `src/components/prompt-library/index.ts` |
+| 어투 프로필(말투 학습 CRUD·분석) | `src/components/voice-profile/{index,analyze}.ts` |
+| 어투 본문 수집·학습 배선 | `entrypoints/background.ts`(`handleVoiceLearn`/`fetchBlogLogNos`/`fetchPostBody`) |
 | HTML↔MD 변환·정제 | `src/components/validator/convert.ts` |
 | 셀렉터·타임아웃 단일 출처 | `src/lib/selectors.ts` |
 | 데이터 모델 | `src/types/{common,models}.ts` |
@@ -229,9 +245,14 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
    - ✅ **결합 1장 + 레이아웃 명세로 재설계(2026-06-14)**: 생성 후 "🖼 이미지" 패널 GEMINI 모드 = 소제목 다중 선택 → **전체를 1장**으로. 본문요약(`composeImagePrompt` = 인포그래픽 레이아웃 명세) + 스타일 필드(구분선 분리) + 방향 라디오 → `buildFinalPrompt` 조립 → `gemini.run` 1회. 파일 첨부는 사용자가 Gemini 화면서 수동(안내). 위 "2026-06-14 작업" 참조.
    - ✅ **레이아웃 명세 Gemini 웹 렌더 라이브 실측 통과(2026-06-15)** — 인포그래픽 명세 → 1장 결합 렌더 확인.
    - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
-2. **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
-3. **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련.
-4. **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).
+2. **어투 프로필 브라우저 실측(2026-06-15 구현, 미확인)** — 모바일 PostView turndown 본문 품질·노이즈, 비공개 글 처리, 학습 어투의 생성 반영. `handleVoiceLearn` 경로.
+3. **M5 대화형 생성(B)** — 현재는 단발 생성(프롬프트→본문 1회). 대화형은 결과 보고 "더 길게/톤 바꿔/이 단락 다시" 식 후속 지시로 반복 다듬기. 우선 후보(아래 후순위 항목과 별개 트랙).
+
+> ⏸ **후순위로 내림(2026-06-15, 사용자 지시)** — 아래 이미지/자동화 항목은 당분간 보류:
+> - **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.
+> - **WP6 모델 일관성** — 참조 이미지 등록 + AI 생성 시 동반 전송(R-7.7). 어댑터에 `modelRef` inlineData 자리 이미 마련. ⚠️ 재개 시 `ModelReference`·`AIImageAdapter` 재추가 필요(죽은코드 청소로 제거됨, 2026-06-14).
+> - **WP8 8-2** — 썸네일에 링크 부착(현재 H2THUMB 무링크라 보류).
+> - **M4** — ⑧ 연속/예약/간격 자동화 + 발행(PUBLISH). 범위 큼.
 
 > ✅ 해소: 블로커(NO_RESPONSE) + 삽입 탭/프레임 오선택 + 참조 바구니 실측 모두 완료(2026-06-09).
 > 큰 그림: 이미지 전략을 **유료 API → Gemini 웹 반자동**으로 틀었고, **참조 바구니**가 글 생성·이미지 생성 공용 입력함이 됨. 다음은 **Gemini 웹 반자동 스파이크**.
