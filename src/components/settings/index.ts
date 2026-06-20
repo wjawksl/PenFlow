@@ -5,7 +5,7 @@ import type { Credential, Settings } from '@/types/models';
 
 export const DEFAULT_SETTINGS: Settings = {
   aiTextCredentials: [],
-  aiModel: 'gemini-2.5-flash',
+  aiModel: 'gemini-3.5-flash',
   format: { lineHeight: '1.8', fontFamily: 'nanumgothic', fontSize: '15px' },
   densityRange: { min: 1, max: 5 }, // ⑩ 권장 밀도 기본 1~5%(R-8.2, 변경 가능)
 };
