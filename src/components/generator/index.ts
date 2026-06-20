@@ -3,7 +3,7 @@
 import type { AITextAdapter } from '@/adapters';
 import { appError, ERR } from '@/lib/errors';
 import { progress } from '@/lib/logger';
-import { assemblePrompt } from '@/lib/prompt';
+import { assemblePrompt, assembleRefinePrompt } from '@/lib/prompt';
 import { callWithKeyRotation } from '@/lib/ai-rotate';
 import { make } from '@/lib/markers';
 import { markdownToHtml } from '@/components/validator/convert';
@@ -40,7 +40,39 @@ export async function generateBody(params: GenerateParams): Promise<Result<strin
     return res;
   }
 
-  const body = stripWrappers(res.value);
+  return finalizeBody(res.value, options);
+}
+
+/** 대화형 생성(B): 기존 본문(MD) + 수정 지시 → LLM 1회 재작성. 후처리·검사·변환은 생성과 공유. */
+export async function refineBody(params: {
+  currentMd: string;
+  instruction: string;
+  options?: PayloadOptions;
+  voice?: VoiceProfile;
+  adapter: AITextAdapter;
+  credentials: Credential[];
+  model: string;
+}): Promise<Result<string>> {
+  const { currentMd, instruction, options, voice, adapter, credentials, model } = params;
+  if (credentials.length === 0) return err(appError(ERR.NO_CREDENTIAL, 'AI 인증 키가 없습니다.'));
+
+  progress('generate', 'AI 본문 다듬는 중…', { percent: 10 });
+  const assembled = assembleRefinePrompt(currentMd, instruction, options, voice);
+  const res = await callWithKeyRotation(
+    credentials,
+    (credential) => adapter.generate({ prompt: assembled, model, credential }),
+    (n) => progress('generate', `키 한도 초과 — ${n}번째 키로 전환`, { percent: 10 }),
+  );
+  if (!res.ok) {
+    progress('generate', res.error.message, { level: 'error' });
+    return res;
+  }
+  return finalizeBody(res.value, options);
+}
+
+/** 생성/다듬기 공통 꼬리: 래퍼 제거 → 소제목 검사 → MD→HTML 변환 → (옵션)H2THUMB 마커 주입. */
+function finalizeBody(raw: string, options?: PayloadOptions): Result<string> {
+  const body = stripWrappers(raw);
   if (!body) return err(appError(ERR.AI_EMPTY, '후처리 후 본문이 비었습니다.'));
 
   const h2Count = countH2(body);

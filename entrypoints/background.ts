@@ -2,7 +2,7 @@
 import { geminiTextAdapter } from '@/adapters/ai/gemini';
 import { dexieRecordStore } from '@/adapters/storage/record-store';
 import { compose } from '@/components/composer';
-import { composeImagePrompt, extractH2Sections, generateBody } from '@/components/generator';
+import { composeImagePrompt, extractH2Sections, generateBody, refineBody } from '@/components/generator';
 import { buildVoiceAnalysisPrompt, pickExcerpts } from '@/components/voice-profile/analyze';
 import { callWithKeyRotation } from '@/lib/ai-rotate';
 import { buildPayload, getPayload, savePayload } from '@/components/payload';
@@ -32,6 +32,7 @@ import type {
   Msg,
   ReferenceFetchReq,
   ReferenceFetchRes,
+  RefineReq,
   TopicCollectReq,
   TopicCollectRes,
   VoiceLearnReq,
@@ -63,6 +64,10 @@ export default defineBackground(() => {
     }
     if (msg.name === 'generate.run') {
       handleGenerate(msg.payload as GenerateReq).then(sendResponse);
+      return true; // 비동기 응답
+    }
+    if (msg.name === 'generate.refine') {
+      handleRefine(msg.payload as RefineReq).then(sendResponse);
       return true; // 비동기 응답
     }
     if (msg.name === 'density.analyze') {
@@ -108,6 +113,11 @@ export default defineBackground(() => {
     }
     if (msg.name === 'insert.start') {
       handleInsert(msg.payload as InsertStartReq).then(sendResponse);
+      return true;
+    }
+    if (msg.name === 'insert.cancel') {
+      // 삽입/임시저장 중지 — 에디터 본문 프레임 CS 로 전달(취소 플래그 set).
+      forwardToEditor('insert.cancel', msg.payload).then(sendResponse);
       return true;
     }
     if (msg.name === 'image.insert') {
@@ -171,6 +181,51 @@ async function handleGenerate(req: GenerateReq): Promise<Result<GenerateRunRes>>
   // 프롬프트 합성은 사용자가 소제목·종류를 고른 뒤(image.prompt)에 한다 — 생성 시점엔 목록만 넘긴다.
   const sections = extractH2Sections(res.value);
   return { ok: true, value: { payloadId: id, visuals: [], sections } };
+}
+
+// 대화형 생성(B): 기존 페이로드 본문을 수정 지시대로 다듬어 같은 id 로 덮어쓴다.
+// 본문(HTML)→MD 복원 후 refineBody, 다시 compose→저장. 옵션은 기존 페이로드 것을 유지(다듬어도 마커 보존).
+async function handleRefine(req: RefineReq): Promise<Result<GenerateRunRes>> {
+  const settings = await loadSettings();
+  const credentials = settings.aiTextCredentials;
+  if (credentials.length === 0) {
+    return failed(appError(ERR.NO_CREDENTIAL, '키를 먼저 등록해 주세요.'));
+  }
+  if (!req.instruction.trim()) {
+    return failed(appError('TOPIC_EMPTY', '다듬을 지시를 입력해 주세요.'));
+  }
+  const payload = await getPayload(req.payloadId);
+  if (!payload) return failed(appError('NO_PAYLOAD', '다듬을 본문이 없습니다. 먼저 생성해 주세요.'));
+
+  // HTML→MD 는 turndown(DOM 필요) → SW 불가, 오프스크린 위임(convert.htmlmd 와 동일 경로).
+  // 마커는 convert protect/restore 로 보존(R-8.4). 현재 본문을 MD 로 복원해 모델에 동봉.
+  const mdRes = await callOffscreen<ConvertReq, ConvertRes>('convert.htmlmd', {
+    direction: 'html2md',
+    content: payload.contentHtml,
+  });
+  if (!mdRes.ok) return mdRes;
+  const res = await refineBody({
+    currentMd: mdRes.value.content,
+    instruction: req.instruction,
+    options: payload.options, // 기존 옵션 유지(마커/출처 등)
+    voice: req.voice, // 활성 어투 프로필(말투 유지)
+    adapter: geminiTextAdapter,
+    credentials, // 복수 키 순환(R-0.2)
+    model: settings.aiModel,
+  });
+  if (!res.ok) return res;
+
+  const composed = compose(res.value, payload.options, []);
+  if (!composed.ok) {
+    progress('compose', composed.error.message, { level: 'error' });
+    return composed;
+  }
+
+  // 같은 id 로 덮어쓰기 — 삽입 버튼·밀도 등 사이드패널 상태 유지.
+  const next = buildPayload(payload.id, res.value, payload.publishOption, payload.options, composed.value);
+  await savePayload(next);
+  const sections = extractH2Sections(res.value);
+  return { ok: true, value: { payloadId: payload.id, visuals: [], sections } };
 }
 
 // ⑨ 선택 소제목들 → "본문 요약" 한 덩이로 압축(텍스트 LLM 1회). 스타일·방향은 사이드패널이 조립.
@@ -407,7 +462,7 @@ async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
 // 탭 전체 브로드캐스트는 top 프레임의 무응답이 먼저 undefined 로 resolve 돼 버린다(Chrome 멀티프레임 한계).
 // → 모든 blog.naver.com 탭의 모든 프레임에 프레임별 개별 전송하고, 에디터 프레임만 hasEditorHere(.se-canvas)
 //   로 Result(ok)를 돌려준다. 에디터 iframe 주소(과거 'PostWriteForm')에 의존하지 않아 네이버 변경에 견고하다.
-async function forwardToEditor<T>(name: ChannelName, payload: T): Promise<Result<void>> {
+async function forwardToEditor<T, TRes = void>(name: ChannelName, payload: T): Promise<Result<TRes>> {
   const tabs = await chrome.tabs.query({ url: 'https://blog.naver.com/*' });
   const editorTabs = tabs.filter((t): t is chrome.tabs.Tab & { id: number } => t.id !== undefined);
   if (editorTabs.length === 0) {
@@ -424,7 +479,7 @@ async function forwardToEditor<T>(name: ChannelName, payload: T): Promise<Result
     for (const frame of frames) {
       try {
         const res = (await chrome.tabs.sendMessage(tab.id, fwd, { frameId: frame.frameId })) as
-          | Result<void>
+          | Result<TRes>
           | undefined;
         reached = true; // 응답이 undefined 라도 리스너는 살아있음(= CS 주입 정상)
         // 에디터 프레임만 Result 를 돌려준다(나머지 프레임은 hasEditorHere=false 라 undefined).

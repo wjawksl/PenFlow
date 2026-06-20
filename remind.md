@@ -2,7 +2,7 @@
 
 새 환경에서 "어디까지 했고 뭘 할 차례인지" 빠르게 복귀하기 위한 문서. 상세 작업분해는 `docs/manual/milestone/` 참조.
 
-마지막 갱신: 2026-06-15 / 브랜치 `main` / HEAD `dfa9d95` 다음 커밋(볼드 번짐 차단 + 어투 편집 — 이 커밋에 반영).
+마지막 갱신: 2026-06-16 / 브랜치 `main` / HEAD `fc3db8f` / **미커밋 작업 있음**(대화형 생성 B + 삽입 중지 + 기존글 클리어 폐기 — 아래 2026-06-16 섹션, 커밋 안 됨).
 
 > ✅ **블로커 해소(2026-06-09)**: "background NO_RESPONSE" 는 두 가지가 겹친 거였음. (1) **dev 빌드(`.output/chrome-mv3-dev`)를 dev 서버 없이 로드** → vite-hmr WebSocket 실패로 확장이 반쯤 죽음. → **항상 prod 빌드(`.output/chrome-mv3`) 로드**, dev 빌드는 `npm run dev` 켜둘 때만. (2) **삽입 탭/프레임 오선택**(아래 `5e76926` 참조). 참조 바구니(링크·첨부·텍스트)도 브라우저 실측 완료.
 >
@@ -18,7 +18,7 @@
 | **M2** | ② 주제 선정(검색량/블로그제목/연관검색어) + ④ 부가요소 합성(표·링크·CTA·백링크·광고문구) | ✅ 완료 |
 | **M3** | ⑨ 비주얼(이미지) + ⑩ 검증(변환·밀도) + Offscreen + 이미지 삽입 | 🟡 진행 중 |
 | M4 | ⑧ 연속/예약/간격 자동화 + 발행(PUBLISH) | ⬜ 예정 |
-| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 + 어투 프로필 | 🟡 프롬프트 라이브러리(R-2.1)·복수키 순환(R-0.2)·어투 프로필 ✅ / 대화형(B) ⬜ |
+| M5 | 복수키 순환 + 대화형 생성(B) + 프롬프트 라이브러리 + 어투 프로필 | 🟡 프롬프트 라이브러리(R-2.1)·복수키 순환(R-0.2)·어투 프로필·대화형(B) ✅ 구현 / 대화형 프롬프트 반영 실측 ⬜ |
 
 ---
 
@@ -39,6 +39,24 @@
 ---
 
 ## 최근 굵직한 결정·수정 (맥락 까먹지 않게)
+
+### 2026-06-16 작업 (대화형 생성 B + 삽입 중지 + 기존글 클리어 폐기 — 이번 세션, **미커밋**)
+
+**1. 대화형 생성(B) = 본문 다듬기** (M5). 단발 생성→임시저장이던 흐름에 "결과 보고 후속 지시로 반복 다듬기" 추가.
+   - **설계(사용자 확인)**: 단발 다듬기 입력칸(채팅 히스토리/멀티턴 어댑터 확장 안 함). 매 다듬기 = `현재 본문 전체 + 지시` → LLM 1회 → 본문 교체. 반복은 입력칸에 계속 지시(매번 최신 본문 기반). 어댑터(단일 프롬프트) 무변경, `callWithKeyRotation`(R-0.2) 재사용. 이미지/소제목은 **재설정**(본문 바뀜→캡션 어긋남 방지), payloadId 유지 덮어쓰기.
+   - **구현**: `prompt.ts assembleRefinePrompt`(마커·어투 헬퍼 재사용 + REFINE 시스템지시) / `generator/index.ts refineBody`(생성/다듬기 공통꼬리 `finalizeBody` 로 추출 공유) / `messaging.ts` `generate.refine` 채널·`RefineReq{payloadId,instruction,voice?}`(응답 GenerateRunRes 재사용) / `background.ts handleRefine`(getPayload→**오프스크린 convert.htmlmd 로 HTML→MD**→refineBody→compose→같은 id savePayload) / `App.tsx` `onRefine`+`refineInput`+`applyRunResult`(생성/다듬기 공통 후처리 헬퍼)+이미지패널 위 `✏ 본문 다듬기` fieldset.
+   - ⚠️ **버그 잡음**: handleRefine 가 background(SW)에서 `htmlToMarkdown`(turndown=DOM) 직접 호출 → SW엔 DOM 없어 throw → sendResponse 누락 → "다듬는 중…" 무한대기였음. → **오프스크린 위임**(`convert.htmlmd`, html2md)으로 해결. (turndown 은 SW 불가, marked 만 SW 가능 — convert.ts 주석 그대로.)
+   - **프롬프트 강화**(사용자: "제대로 적용 안 됨"): REFINE_INSTRUCTION 에 "가장 중요: [수정 지시] 반드시 반영, 원문 그대로 반환은 실패" 최우선 규칙. ⚠️ **실측 미확인** — 지시가 실제 글에 반영되는지(핵심 남은 검증).
+   - 테스트: `tests/generate-refine.test.ts` 6케이스(refineBody 성공/키순환/소제목누락/빈키 + assembleRefinePrompt 조립 2).
+
+**2. 삽입/임시저장 중지**(유지). 삽입 도중 `⏹ 중지` → 다음 블록 경계서 멈춤(이미 들어간 블록 유지), 재시도 버튼 유지.
+   - `messaging.ts` `insert.cancel`·`InsertCancelReq` / `editor.content.ts` 모듈 플래그 `cancelRequested`(insert.cancel 핸들러 set, handleInsert 시작 시 리셋) / `engine.ts runInsert(…, isCancelled)` 블록경계·tempSave 직전 검사→`INSERT_CANCELLED`(err.ts 신규 코드) / `background.ts` insert.cancel→forwardToEditor 릴레이 / `App.tsx onCancelInsert`+inserting 중 중지버튼.
+
+**3. 기존 글 클리어 + 컨펌 → 폐기, 수동 안내로 전환**. (구현했다가 SE 한계로 되돌림.)
+   - 시도: 삽입 시 기존 본문/제목 비우고 삽입(없으면 그대로, 있으면 사이드패널 confirm). `force`/`needsConfirm` 2단계, `clearEditorBody`(selectAll+delete), placeholder 제외 `hasExistingContent`.
+   - ❌ **SE 실측 한계로 전부 폐기**(라이브 디버깅): SmartEditor ONE 본문은 **contenteditable 이 아님** — 유일한 `[contenteditable="true"]` 는 화면밖(-9999px, aria-hidden) **클립보드 프록시 div**(셀렉터가 이걸 잡음). 진짜 본문은 SE 자체 caret/selection 모델(`.se-canvas`>`.se-caret`/`.se-selection`). → 표준 `execCommand('selectAll'/'delete')` 무시, **합성 Ctrl+A keydown 도 무시**(dispatchEvent=true, preventDefault 안 함 = isTrusted 키만 처리), `.se-canvas .se-component` DOM 제거도 화면 안 사라짐(SE 재구성). paste 만 SE 가 가로채 caret 위치에 append.
+   - → **결론**: 자동 본문 클리어 불가. 클리어·컨펌 코드 전부 롤백, 대신 삽입 버튼 위 **수동 안내**("⚠ 기존 글 있으면 Ctrl+A→Del 로 먼저 비운 뒤 삽입. 현재 커서 위치에 추가됨"). 삽입은 종전대로 커서 위치 append.
+   - 검증: tsc 0, 테스트 116 pass(110+6), prod 빌드 OK.
 
 ### 2026-06-15 작업 (볼드 번짐 차단 + 등록 어투 편집 — 이번 세션)
 
@@ -235,7 +253,10 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
 | SE DOM 헬퍼(paste·split·title) | `src/components/insert/dom.ts` |
 | 이미지 삽입(fetch·File·paste·완료감지) | `src/components/insert/image.ts` |
 | content script(삽입·이미지 라우팅) | `entrypoints/editor.content.ts` |
-| 본문 생성·후처리·마커 주입 | `src/components/generator/index.ts` |
+| 본문 생성·후처리·마커 주입 | `src/components/generator/index.ts`(`generateBody`/`refineBody`/`finalizeBody`) |
+| 대화형 생성(B) 프롬프트 조립 | `src/lib/prompt.ts`(`assembleRefinePrompt`) |
+| 다듬기 라우팅(HTML→MD 오프스크린 위임) | `entrypoints/background.ts`(`handleRefine`) |
+| 삽입 중지(취소 플래그·블록경계 검사) | `entrypoints/editor.content.ts`(`cancelRequested`)·`engine.ts`(`isCancelled`) |
 | 복수 키 순환 공용 헬퍼(R-0.2) | `src/lib/ai-rotate.ts`(`callWithKeyRotation`) |
 | 부가요소 합성(마커→InsertQueue) | `src/components/composer/index.ts` |
 | 합성 정합성 검사 | `src/components/composer/validate.ts` |
@@ -262,7 +283,8 @@ R-8.4("HTML↔MD 왕복 후 마커 무손실") 검증 항목을 테스트로 닫
    - ✅ **레이아웃 명세 Gemini 웹 렌더 라이브 실측 통과(2026-06-15)** — 인포그래픽 명세 → 1장 결합 렌더 확인.
    - **남은 것**: (#3) 전송버튼 셀렉터는 추측 폴백만(반자동이라 비차단). 참조 바구니 이미지 첨부(WP6, attachButton=`button[aria-label*="업로드"]`, `input[type=file]` 지연렌더) + AI 생성 동반(R-7.7).
 2. **어투 프로필 브라우저 실측(2026-06-15 구현, 미확인)** — 모바일 PostView turndown 본문 품질·노이즈, 비공개 글 처리, 학습 어투의 생성 반영. `handleVoiceLearn` 경로.
-3. **M5 대화형 생성(B)** — 현재는 단발 생성(프롬프트→본문 1회). 대화형은 결과 보고 "더 길게/톤 바꿔/이 단락 다시" 식 후속 지시로 반복 다듬기. 우선 후보(아래 후순위 항목과 별개 트랙).
+3. **M5 대화형 생성(B) 실측**(2026-06-16 구현, 미확인) — `✏ 본문 다듬기`(`generate.refine`→`handleRefine`→`refineBody`). **핵심 검증 = 수정 지시가 실제 글에 반영되는지**(사용자가 "제대로 적용 안 됨" 보고 → 프롬프트 강화했으나 라이브 미확인). 부수: 다듬기 후 소제목/이미지 재설정·삽입 정상·어투 유지.
+   - ⚠️ 삽입 시 **기존 글 자동 삭제는 불가**(SE ONE 모델 한계, 2026-06-16 폐기). 수동 안내로 대체 — 위 "2026-06-16 작업 #3" 참조.
 
 > ⏸ **후순위로 내림(2026-06-15, 사용자 지시)** — 아래 이미지/자동화 항목은 당분간 보류:
 > - **WP4 슬롯 잔여** — H1 대표 썸네일·본문(IMG) 슬롯. 본문 IMG 는 생성기가 IMG 마커 emit 해야 함.

@@ -20,8 +20,11 @@ import type {
   ImageInsertReq,
   ImagePromptReq,
   ImagePromptRes,
+  InsertCancelReq,
+  InsertStartReq,
   ReferenceFetchReq,
   ReferenceFetchRes,
+  RefineReq,
   TopicCollectReq,
   TopicCollectRes,
   VisualComposeRes,
@@ -173,6 +176,7 @@ export function App() {
   const [imgProgress, setImgProgress] = useState(''); // 이미지 생성 진행/결과 메시지
   const [storageUsage, setStorageUsage] = useState<{ usage: number; quota: number } | null>(null); // 용량 미터(WP5 5-3)
   const [hasPayload, setHasPayload] = useState(false); // 삽입 가능한 페이로드 존재 — 삽입 실패해도 버튼 유지(재시도)
+  const [refineInput, setRefineInput] = useState(''); // 대화형 생성(B) — 본문 다듬기 지시
   const payloadId = useRef<string | null>(null);
   const setTopicsFor = (p: 'A' | 'B' | 'C', list: Topic[]) =>
     setTopicsMap((m) => ({ ...m, [p]: list }));
@@ -525,18 +529,46 @@ export function App() {
       setProgress(res.error.message);
       return;
     }
-    payloadId.current = res.value.payloadId;
+    applyRunResult(res.value, '생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
+  }
+
+  // 생성/다듬기 공통 후처리 — 페이로드·소제목·이미지 패널 상태를 새 본문에 맞춰 재설정.
+  function applyRunResult(value: GenerateRunRes, doneMsg: string) {
+    payloadId.current = value.payloadId;
     setHasPayload(true); // 삽입 가능 — 삽입 실패해도 버튼 유지(재시도, 재생성 불필요)
-    setVisuals(res.value.visuals ?? []); // ⑨ 새 본문 → 비주얼 초기화(이미지는 아래 패널에서 골라 생성)
+    setVisuals(value.visuals ?? []); // ⑨ 새 본문 → 비주얼 초기화(이미지는 아래 패널에서 골라 생성)
+    setComboPrompt(''); // 본문 바뀜 → 합성했던 요약 폐기
     // ⑨ 소제목 목록 → 이미지 패널. 기본 전체 선택(예전 일괄 동작 보존, 필요 시 해제).
-    const secs = res.value.sections ?? [];
+    const secs = value.sections ?? [];
     setSections(secs);
     setImgSel(new Set(secs.map((_, i) => i)));
     setImgProgress('');
     setPhase('generated');
-    setProgress('생성 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
+    setProgress(doneMsg);
     setDensReport(null); // 새 본문 → 이전 밀도 결과 초기화(밀도 검사는 삽입 후)
     setDensMsg('');
+  }
+
+  // 대화형 생성(B): 지시대로 현재 본문을 다듬어 같은 페이로드 덮어쓰기. 본문 바뀌면 이미지/소제목 재설정.
+  async function onRefine() {
+    if (!payloadId.current) return;
+    const instruction = refineInput.trim();
+    if (!instruction) return;
+    setPhase('generating');
+    setProgress('본문 다듬는 중…');
+    const req: RefineReq = {
+      payloadId: payloadId.current,
+      instruction,
+      voice: voiceProfiles.find((v) => v.name === activeVoice), // 활성 어투 유지
+    };
+    const res = await sendCmd<RefineReq, GenerateRunRes>('generate.refine', req);
+    if (!res.ok) {
+      setPhase('error');
+      setProgress(res.error.message);
+      return;
+    }
+    setRefineInput(''); // 지시 반영 완료 → 입력칸 비움(다음 지시 대기)
+    applyRunResult(res.value, '다듬기 완료. 네이버 글쓰기 페이지를 열고 삽입하세요.');
   }
 
   // ⑩ 키워드 밀도 검증(WP2): 메인 키워드 + 추가 키워드를 background 에서 집계.
@@ -572,14 +604,22 @@ export function App() {
     if (!payloadId.current) return;
     setPhase('inserting');
     setProgress('삽입 시작…');
-    const res = await sendCmd<{ payloadId: string }, void>('insert.start', {
+    const res = await sendCmd<InsertStartReq, void>('insert.start', {
       payloadId: payloadId.current,
     });
     if (!res.ok) {
       setPhase('error');
       setProgress(res.error.message);
     }
+    // 삽입은 현재 커서 위치에 추가된다 — 기존 글 위에 덮어쓰지 않으니, 필요하면 사용자가 먼저 에디터에서 비운다(안내).
     // 성공 시 step.done 이벤트로 phase=done 처리.
+  }
+
+  // 삽입/임시저장 중지 — 본문 프레임 CS 에 취소 플래그 set. 다음 블록 경계서 멈추고 step.done(failed)→phase=error.
+  async function onCancelInsert() {
+    if (!payloadId.current) return;
+    setProgress('중지 요청… (진행 중인 블록까지만 들어가요)');
+    await sendCmd<InsertCancelReq, void>('insert.cancel', { payloadId: payloadId.current });
   }
 
   // ⑨ 수동 이미지 삽입: 고른 썸네일을 에디터 현재 커서에 넣는다(자동 삽입 안 함, 사용자 통제).
@@ -1181,6 +1221,32 @@ export function App() {
           </label>
         </fieldset>
 
+        {/* 대화형 생성(B) — 생성 후 후속 지시로 본문 다듬기. 같은 페이로드 덮어쓰기. */}
+        {hasPayload && (
+          <fieldset className="min-w-0 space-y-2 rounded border p-2">
+            <legend className="px-1 text-xs text-gray-500">✏ 본문 다듬기</legend>
+            <textarea
+              className="w-full resize-none rounded border p-2 text-sm"
+              rows={2}
+              placeholder="예: 더 길게, 톤을 친근하게, 두 번째 단락을 다시 써줘"
+              value={refineInput}
+              onChange={(e) => setRefineInput(e.target.value)}
+              disabled={busy}
+            />
+            <button
+              className="w-full rounded border border-gray-900 py-1.5 text-sm disabled:opacity-50"
+              onClick={onRefine}
+              disabled={busy || !refineInput.trim()}
+              type="button"
+            >
+              {phase === 'generating' ? '다듬는 중…' : '✏ 본문 다듬기'}
+            </button>
+            <p className="text-xs text-gray-400">
+              지시대로 현재 본문을 고쳐 다시 만듭니다. 이미 만든 이미지는 비워집니다(소제목이 바뀔 수 있어요).
+            </p>
+          </fieldset>
+        )}
+
         {/* ⑨ 이미지 — 생성 후 소제목을 골라 기본 카드/Gemini 웹으로 생성. 결과는 아래 썸네일에 합류. */}
         {sections.length > 0 && (
           <fieldset className="min-w-0 space-y-2 rounded border p-2">
@@ -1403,18 +1469,31 @@ export function App() {
           {phase === 'generating' ? '생성 중…' : '✍ API 글 생성'}
         </button>
         {/* 삽입 버튼 — 페이로드가 있는 한 유지(삽입 실패해도 사라지지 않음, 재생성 없이 재시도). */}
-        {hasPayload && phase !== 'generating' && (
-          <button
-            className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
-            onClick={onInsert}
-            disabled={phase === 'inserting'}
-            type="button"
-          >
-            {phase === 'inserting'
-              ? '삽입 중…'
-              : phase === 'error'
+        {hasPayload && phase !== 'generating' && phase !== 'inserting' && (
+          <>
+            {/* SmartEditor 는 자체 모델이라 기존 글 자동 삭제가 불가 → 사용자가 직접 비우도록 안내. */}
+            <p className="text-[11px] text-amber-600">
+              ⚠ 에디터에 기존 글이 있으면 <b>Ctrl+A → Del</b> 로 먼저 비운 뒤 삽입하세요. (현재 커서 위치에 추가됩니다)
+            </p>
+            <button
+              className="w-full rounded border border-gray-900 py-2 disabled:opacity-50"
+              onClick={() => onInsert()}
+              type="button"
+            >
+              {phase === 'error'
                 ? '↻ 다시 삽입 (임시저장)'
                 : '네이버 에디터에 삽입 (임시저장)'}
+            </button>
+          </>
+        )}
+        {/* 삽입 중 — 중지 버튼(다음 블록 경계서 멈춤). */}
+        {phase === 'inserting' && (
+          <button
+            className="w-full rounded border border-red-600 py-2 text-red-600"
+            onClick={onCancelInsert}
+            type="button"
+          >
+            ⏹ 중지
           </button>
         )}
       </div>

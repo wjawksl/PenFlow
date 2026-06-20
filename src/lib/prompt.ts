@@ -10,6 +10,19 @@ const SYSTEM_INSTRUCTION = [
   '3. 자연스러운 한국어 문단으로 작성한다.',
 ].join('\n');
 
+// 다듬기(대화형 생성 B) 시스템 지시 — 기존 글을 지시대로 고쳐 전체를 다시 출력.
+// 핵심: [수정 지시]를 반드시 실제로 반영해야 한다(원문 그대로 반환 금지). 강조 안 하면 모델이 거의 안 고침.
+const REFINE_INSTRUCTION = [
+  '너는 한국어 네이버 블로그 글을 다듬는 작가다.',
+  '아래 [기존 글]을 [수정 지시]대로 실제로 고쳐서 글 전체를 다시 출력한다.',
+  '가장 중요한 규칙: [수정 지시]를 반드시 반영한다. 지시 내용이 글에 분명히 드러나야 한다. 원문을 거의 그대로 돌려주는 것은 실패다.',
+  '그 밖의 규칙:',
+  '1. 소제목은 마크다운 H2(`## 제목`)로 구분한다. 최소 2개 이상 유지한다.',
+  '2. 기존 글에 있던 `[[PF:...]]` 마커는 위치를 유지한 채 그대로 보존한다.',
+  '3. 출력은 본문 텍스트만. 코드펜스(```)·"다음은 글입니다" 같은 머리말/꼬리말 금지.',
+  '4. 지시가 특정 부분만 가리키면 그 부분을 확실히 바꾸고 나머지는 자연스럽게 이어지도록 유지한다.',
+].join('\n');
+
 // 06 §4.1 — [시스템 지시] + [마커 지시] + (선택)[어투 지침] + [사용자 프롬프트] + [주제] + (선택)[참고 자료]
 export function assemblePrompt(
   topic: Topic,
@@ -26,6 +39,24 @@ export function assemblePrompt(
   parts.push(`\n[사용자 지시]\n${prompt.body}`);
   parts.push(`\n[주제]\n${topic.title ?? topic.keyword}`);
   if (reference?.trim()) parts.push(`\n[참고 자료]\n${reference}`);
+  return parts.join('\n');
+}
+
+// 대화형 생성(B) — 기존 본문(MD) + 수정 지시 → LLM 1회로 전체 본문 재작성.
+// 마커·어투 주입은 생성과 동일(다듬어도 마커/말투 유지). 어댑터는 단일 프롬프트라 본문을 그대로 동봉한다.
+export function assembleRefinePrompt(
+  currentMd: string,
+  instruction: string,
+  options?: PayloadOptions,
+  voice?: VoiceProfile,
+): string {
+  const parts = [REFINE_INSTRUCTION];
+  const markers = markerInstructions(options);
+  if (markers) parts.push(markers);
+  const voiceGuide = voiceInstructions(voice);
+  if (voiceGuide) parts.push(voiceGuide);
+  parts.push(`\n[기존 글]\n${currentMd}`);
+  parts.push(`\n[수정 지시]\n${instruction}`);
   return parts.join('\n');
 }
 

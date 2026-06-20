@@ -13,6 +13,9 @@ import type { ImageInsertReq, InsertStartReq, Msg } from '@/lib/messaging';
 import { SEL } from '@/lib/selectors';
 import { err, ok, type Result } from '@/types/common';
 
+// 삽입/임시저장 중지 플래그 — insert.cancel 수신 시 set. runInsert 가 블록 경계마다 검사한다.
+let cancelRequested = false;
+
 export default defineContentScript({
   matches: ['https://blog.naver.com/*'],
   allFrames: true, // 본문 iframe 안에서 실행되도록(05 §2, 스파이크)
@@ -24,9 +27,15 @@ export default defineContentScript({
 
     chrome.runtime.onMessage.addListener((msg: Msg, _sender, sendResponse) => {
       if (msg.kind !== 'cmd') return false;
-      if (msg.name !== 'insert.start' && msg.name !== 'image.insert') return false;
+      if (msg.name !== 'insert.start' && msg.name !== 'image.insert' && msg.name !== 'insert.cancel')
+        return false;
       // 본문은 sub-frame(iframe) 에 있음. top 프레임은 무시 → 본문 프레임만 응답.
       if (isTop || !hasEditorHere()) return false;
+      if (msg.name === 'insert.cancel') {
+        cancelRequested = true; // runInsert 가 다음 블록 경계서 검사해 중지
+        sendResponse({ ok: true, value: undefined });
+        return false;
+      }
       if (msg.name === 'image.insert') {
         handleImageInsert(msg.payload as ImageInsertReq).then(sendResponse);
         return true;
@@ -66,13 +75,20 @@ async function handleInsert(req: InsertStartReq): Promise<Result<void>> {
       return { ok: false, error: e };
     }
 
+    cancelRequested = false; // 이번 삽입 취소 플래그 초기화
     const settings = await loadSettings();
-    const insertRes = await runInsert(payload, settings.format, '제목 없음');
+    const insertRes = await runInsert(payload, settings.format, '제목 없음', () => cancelRequested);
     if (!insertRes.ok) {
       emitStepDone({ topicId: payload.id, status: 'failed', error: insertRes.error });
       return insertRes;
     }
 
+    if (cancelRequested) {
+      // 임시저장 직전 중지 — 본문은 들어갔지만 저장은 건너뜀.
+      const e = appError(ERR.INSERT_CANCELLED, '삽입을 중지했어요.', { failedStep: '중지' });
+      emitStepDone({ topicId: payload.id, status: 'failed', error: e });
+      return { ok: false, error: e };
+    }
     // ⑦ 임시저장(M1) — publishOption 기본 TEMP_SAVE.
     const pubRes = await tempSave();
     if (!pubRes.ok) {

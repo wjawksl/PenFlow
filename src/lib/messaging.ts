@@ -25,6 +25,7 @@ export interface Msg<T = unknown> {
 export type ChannelName =
   | 'topic.collect'
   | 'generate.run'
+  | 'generate.refine'
   | 'visual.compose'
   | 'visual.composeSelected'
   | 'visual.fetch'
@@ -35,6 +36,7 @@ export type ChannelName =
   | 'convert.htmlmd'
   | 'density.analyze'
   | 'insert.start'
+  | 'insert.cancel'
   | 'image.insert'
   | 'publish.do'
   | 'step.done'
@@ -60,6 +62,14 @@ export interface GenerateReq {
 export interface GenerateRes {
   contentHtml: string;
 } // ③→⑩: 약속된 마커 포함
+
+// 대화형 생성(B): 기존 페이로드 본문을 수정 지시대로 다듬어 같은 id 로 덮어쓴다.
+// 응답은 GenerateRunRes 재사용(payloadId 동일 + 갱신된 소제목). visuals 는 항상 비움(캡션 어긋남 방지).
+export interface RefineReq {
+  payloadId: string;
+  instruction: string; // 후속 지시("더 길게", "톤 친근하게" 등)
+  voice?: VoiceProfile; // 활성 어투 프로필 — 다듬어도 말투 유지
+}
 
 // 어투 학습: 블로그 본문 N건 수집 → 텍스트 LLM 으로 어투 명세 증류 + 짧은 발췌(하이브리드).
 // 저장(이름붙이기)은 사이드패널이 voice-profile 모듈로 직접(storage.local). 여기선 학습 결과만 반환.
@@ -169,6 +179,10 @@ export interface ReferenceFetchRes {
 export interface InsertStartReq {
   payloadId: string;
 } // ④→⑥: id만 전달(05 §5)
+// 삽입/임시저장 중지(다음 블록 경계서 멈춤). 본문 프레임 CS 가 취소 플래그 set.
+export interface InsertCancelReq {
+  payloadId: string;
+}
 export interface ImageInsertReq {
   id: string; // ⑨ 비주얼 RecordStore(Dexie) ref id — 사이드패널이 골라 에디터 커서에 수동 삽입(WP8)
 }

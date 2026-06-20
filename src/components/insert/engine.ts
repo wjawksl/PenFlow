@@ -44,10 +44,14 @@ export function taskToHtml(task: InsertTask): string {
 const jitter = (): number =>
   P.jobDelayMin + Math.floor(Math.random() * (P.jobDelayMax - P.jobDelayMin));
 
+// 취소 신호 — 사용자가 중지하면 블록 경계마다 검사해 INSERT_CANCELLED 로 안전 종료(이미 들어간 건 유지).
+const CANCELLED = () => false;
+
 export async function runInsert(
   payload: Payload,
   format: FormatPrefs,
   titleFallback: string,
+  isCancelled: () => boolean = CANCELLED,
 ): Promise<Result<void>> {
   // all_frames 주입으로 이 코드는 본문이 있는 editor iframe 안에서 실행된다 → own document.
   // 1) 편집기 준비 감지 (폴링+타임아웃) — R-4.1, TC-INS-02/06.
@@ -70,6 +74,8 @@ export async function runInsert(
   if (!focused) {
     return fail(ERR.EDITOR_NO_FOCUS, '본문 영역을 한 번 클릭해 주세요.', '포커스 확보');
   }
+
+  if (isCancelled()) return cancelled();
 
   // 4) 본문 삽입 — InsertQueue 가 있으면 작업 순서대로(R-3.3), 없으면 단일 HTML(M1 호환).
   //    스파이크 실측: 표(.se-table)·링크(.se-link) 모두 HTML paste 로 변환됨 → 작업별 HTML paste.
@@ -94,6 +100,7 @@ export async function runInsert(
     }
     const blocks = task.type === 'text' ? splitForSe(html) : [html];
     for (const block of blocks) {
+      if (isCancelled()) return cancelled(); // 블록 경계서 중지 — 이미 들어간 블록은 유지
       try {
         body.focus();
         pasteHtml(body, block);
@@ -107,6 +114,7 @@ export async function runInsert(
   // 5) 서식 일괄 적용(best-effort) — 12.2-5, TC-INS-04. 정교한 툴바 조작은 후속.
   applyFormat(body, format);
 
+  if (isCancelled()) return cancelled();
   // 6) 제목 입력 — 맨 마지막. 07 §7, TC-INS-05. 스파이크: 제목 클릭→중첩 iframe body paste.
   //    (제목 클릭이 focus 를 가져가므로 본문 삽입 완료 후 처리해 충돌 방지.)
   progress('insert', '제목 입력 중…', { percent: 88 });
@@ -115,6 +123,11 @@ export async function runInsert(
 
   progress('insert', '삽입 완료', { percent: 92 });
   return ok(undefined);
+}
+
+function cancelled(): Result<void> {
+  progress('insert', '삽입을 중지했어요.', { level: 'warn' });
+  return err(appError(ERR.INSERT_CANCELLED, '삽입을 중지했어요.', { failedStep: '중지' }));
 }
 
 async function ensureFocus(body: HTMLElement): Promise<boolean> {
